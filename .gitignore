@@ -1,0 +1,9 @@
+
+# ide
+.idea
+.project
+.pydevproject
+
+# large files
+data
+
