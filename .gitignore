@@ -3,7 +3,12 @@
 .idea
 .project
 .pydevproject
+.DS_Store
 
 # large files
 data
+
+# virtual environment
+venv
+ENV
 
