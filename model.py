@@ -18,21 +18,23 @@ def spike_hist():
 
     import matplotlib.pyplot as plt
 
-    l = list()
-    for _, spikes in utils.get_data_set('train'):
+    plt.figure()
+    for i, (_, spikes) in enumerate(utils.get_data_set('train')):
         x = np.reshape(spikes, (-1,))
         x = x[np.isnan(x) == False]
         print(x.shape)
-        l.append(x)
-    c = np.concatenate(l, 0)
 
-    plt.hist(np.cast[np.int32](c), 6, log=True)
+        plt.subplot(5, 2, i + 1)
+        plt.hist(np.cast[np.int32](x), range(6), log=True)
+
     plt.show()
 
 
 if __name__ == '__main__':
-    m = 0
-    for i, (calcium, spikes, last_spike) in enumerate(utils.generate_training_set()):
-        # print(i, calcium.shape, spikes.shape, last_spike.shape)
-        m = max(m, int(last_spike))
-        print(i, m)
+    spike_hist()
+
+#     m = 0
+#     for i, (calcium, spikes, last_spike) in enumerate(utils.generate_training_set()):
+#         # print(i, calcium.shape, spikes.shape, last_spike.shape)
+#         m = max(m, int(last_spike))
+#         print(i, m)
