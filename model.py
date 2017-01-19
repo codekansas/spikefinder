@@ -101,6 +101,9 @@ if __name__ == '__main__':
     }
 
     # TODO: The data generator should mix up the datasets better.
+    # TODO: The data generator could sample more from data which ends in a
+    # spike and less from data that doesn't end in a spike (this would avoid
+    # having to do the class weights).
     model.fit_generator(_grouper(),
                         samples_per_epoch=samples_per_epoch,
                         nb_epoch=nb_epoch,
