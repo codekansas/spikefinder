@@ -41,21 +41,25 @@ def generate_training_set(num_timesteps=100, batch_size=32):
         spikes_column = np.cast['int32'](spikes_column)
         column_length = len(calcium_column) - np.sum(np.isnan(calcium_column))
 
-        # Shuffles the points to make them better.
-        idx = range(num_timesteps, column_length, num_skip)
-        random.shuffle(idx)
+        while True:  # Iterates infinitely.
+            idx = range(num_timesteps, column_length, num_skip)
+            random.shuffle(idx)
+            for i in idx:
+                yield (calcium_column[i - num_timesteps:i],
+                       spikes_column[i - num_timesteps:i])
 
-        return ((calcium_column[i - num_timesteps:i],
-                 spikes_column[i - num_timesteps:i])
-                for i in idx)
+    # Iterating this way avoids caching the results (i.e. itertools.repeat)
+    pairs = [[_process_single_column(calcium[:, i], spikes[:, i])
+              for i in range(calcium.shape[1])]
+             for calcium, spikes in get_data_set('train')]
 
     eye = np.eye(7)
     while True:
-        pairs = (_process_single_column(calcium[:, i], spikes[:, i])
-                 for calcium, spikes in get_data_set('train')
-                 for i in range(calcium.shape[1]))
-        for calcium, spikes in itertools.chain.from_iterable(pairs):
-            yield calcium[1:], spikes[:-1], eye[spikes[-1]]
+        i = np.random.randint(0, len(pairs))
+        j = np.random.randint(0, len(pairs[i]))
+        dataset = pairs[i]
+        calcium, spikes = dataset[j].next()
+        yield i, calcium[1:], spikes[:-1], eye[spikes[-1]]
 
 
 def get_data_set(mode='train'):
@@ -95,7 +99,7 @@ def get_data_set(mode='train'):
                                                  os.environ['DATA_PATH']))
 
     for train_or_test_set in file_names:
-        loaded_dataset = list()
+        loaded_dataset = []
 
         for file_name in train_or_test_set:
             file_path = os.path.join(data_path, file_name)
@@ -133,14 +137,3 @@ def plot_dataset(dataset, *args, **kwargs):
 
     x = np.arange(time_steps) / 100.
     plt.plot(x, dataset, *args, **kwargs)
-
-
-if __name__ == '__main__':
-    import matplotlib.pyplot as plt
-
-    calcium_data, spikes_data = get_data_set(mode='train').next()
-
-    # plot_dataset(calcium_data[:, 0], color='r')
-    plot_dataset(spikes_data[:, 0], color='k')
-
-    plt.show()
