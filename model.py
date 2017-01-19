@@ -89,7 +89,19 @@ if __name__ == '__main__':
     model.compile(optimizer='adam', loss='categorical_crossentropy',
                   metrics=['acc'])
 
+    # Defines the class weights (how much to weight each output loss).
+    class_weight = {
+        0: 0.1,  # No spikes, weight way less (doesn't have much information).
+        1: 1.,  # Weight the other ones approximately according to their freq.
+        2: 10.,
+        3: 0.,  # Only worry about getting 1 and 2 correctly classified.
+        4: 0.,
+        5: 0.,
+        6: 0.,
+    }
+
     # TODO: The data generator should mix up the datasets better.
     model.fit_generator(_grouper(),
                         samples_per_epoch=samples_per_epoch,
-                        nb_epoch=nb_epoch)
+                        nb_epoch=nb_epoch,
+                        class_weight=class_weight)
