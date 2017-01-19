@@ -5,6 +5,7 @@ from __future__ import division
 from __future__ import print_function
 
 import itertools
+import random
 import os
 
 import numpy as np
@@ -13,7 +14,7 @@ import numpy as np
 _DOWNLOAD_URL = 'http://spikefinder.codeneuro.org/'
 
 
-def generate_training_set(num_timesteps=100):
+def generate_training_set(num_timesteps=100, batch_size=32):
     """Generates the training dataset.
 
     When choosing num_timesteps, keep in mind that a sampling rate of 100 Hz
@@ -21,6 +22,7 @@ def generate_training_set(num_timesteps=100):
 
     Args:
         num_timesteps: int, number of timesteps before and after to generate.
+        batch_size: int, number of samples per batch.
 
     Yields:
         tuples (calcium, spikes, last_spike) where:
@@ -32,24 +34,28 @@ def generate_training_set(num_timesteps=100):
                 the last interval (the model should try to predict this).
     """
 
+    num_timesteps += 1  # Add one, because we want to yield the last point too.
+
     def _process_single_column(calcium_column, spikes_column, num_skip=1):
         calcium_column = np.expand_dims(calcium_column, -1)
-        spikes_column = np.expand_dims(spikes_column, -1)
+        spikes_column = np.cast['int32'](spikes_column)
         column_length = len(calcium_column) - np.sum(np.isnan(calcium_column))
+
+        # Shuffles the points to make them better.
+        idx = range(num_timesteps, column_length, num_skip)
+        random.shuffle(idx)
 
         return ((calcium_column[i - num_timesteps:i],
                  spikes_column[i - num_timesteps:i])
-                for i in range(num_timesteps, column_length, num_skip))
+                for i in idx)
 
-    calcium_spike_pairs = (_process_single_column(calcium[:, i], spikes[:, i])
-                           for calcium, spikes in get_data_set('train')
-                           for i in range(calcium.shape[1]))
-
-    # Cycle through the data infinitely.
-    calcium_spike_pairs = itertools.cycle(calcium_spike_pairs)
-
-    for calcium, spikes in itertools.chain.from_iterable(calcium_spike_pairs):
-        yield calcium, spikes[:-1], spikes[-1]
+    eye = np.eye(7)
+    while True:
+        pairs = (_process_single_column(calcium[:, i], spikes[:, i])
+                 for calcium, spikes in get_data_set('train')
+                 for i in range(calcium.shape[1]))
+        for calcium, spikes in itertools.chain.from_iterable(pairs):
+            yield calcium[1:], spikes[:-1], eye[spikes[-1]]
 
 
 def get_data_set(mode='train'):

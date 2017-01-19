@@ -12,29 +12,84 @@ from __future__ import print_function
 import numpy as np
 import utils
 
+from keras.layers import BatchNormalization
+from keras.layers import Convolution1D
+from keras.layers import Dense
+from keras.layers import Embedding
+from keras.layers import Flatten
+from keras.layers import Input
+from keras.layers import LSTM
+from keras.layers import merge
+from keras.layers import TimeDistributed
 
-def spike_hist():
-    """Generates a histogram of spike counts over all the data."""
+from keras.models import Model
 
-    import matplotlib.pyplot as plt
 
-    plt.figure()
-    for i, (_, spikes) in enumerate(utils.get_data_set('train')):
-        x = np.reshape(spikes, (-1,))
-        x = x[np.isnan(x) == False]
-        print(x.shape)
+def build_model(num_input_timesteps):
+    calcium = Input(shape=(num_timesteps, 1), dtype='float32', name='calcium')
+    spikes = Input(shape=(num_timesteps, 1), dtype='int32', name='spikes')
 
-        plt.subplot(5, 2, i + 1)
-        plt.hist(np.cast[np.int32](x), range(6), log=True)
+    # Embed spikes into vector space.
+    flat = Flatten()(spikes)
+    emb = Embedding(7, 7, init='orthogonal')(flat)
 
-    plt.show()
+    # Normalizes the data along the time dimension.
+    calcium_norm = BatchNormalization(mode=2, axis=1)(calcium)
+    spikes_norm = BatchNormalization(mode=2, axis=1)(emb)
+
+    # Like embedding the calcium channel, sort of.
+    dense = Dense(128,
+                  activation='relu',
+                  W_regularizer='l2',
+                  activity_regularizer='activity_l2')
+    calcium_hid = TimeDistributed(dense)(calcium_norm)
+
+    # Merge channels together.
+    hidden = merge([calcium_hid, spikes_norm], mode='concat', concat_axis=-1)
+
+    # Adds three convolutional layers.
+    for _ in range(3):
+        hidden = Convolution1D(64, 3,
+                               border_mode='same',
+                               activation='relu',
+                               W_regularizer='l2',
+                               activity_regularizer='activity_l2')(hidden)
+
+    # Adds two recurrent layers.
+    hidden = LSTM(64, return_sequences=True)(hidden)
+    hidden = LSTM(64, return_sequences=False)(hidden)
+
+    # Adds prediction layer.
+    output = Dense(7, activation='softmax')(hidden)
+
+    # Builds the model.
+    model = Model(input=[calcium, spikes], output=[output])
+
+    return model
 
 
 if __name__ == '__main__':
-    spike_hist()
+    num_timesteps = 100
+    samples_per_epoch = 1000
+    nb_epoch = 10
+    batch_size = 32
 
-#     m = 0
-#     for i, (calcium, spikes, last_spike) in enumerate(utils.generate_training_set()):
-#         # print(i, calcium.shape, spikes.shape, last_spike.shape)
-#         m = max(m, int(last_spike))
-#         print(i, m)
+    def _grouper():
+        iterable = utils.generate_training_set(num_timesteps)
+        while True:
+            batched = zip(*(iterable.next() for _ in xrange(batch_size)))
+            yield ([np.asarray(batched[0]), np.asarray(batched[0])],
+                   [np.asarray(batched[2]),])
+
+    r = _grouper()
+
+    model = build_model(num_timesteps)
+
+    # TODO: Add precision / recall metrics?
+    model.compile(optimizer='adam', loss='categorical_crossentropy',
+                  metrics=['acc'])
+
+    # TODO: The data generator should mix up the datasets better.
+    model.fit_generator(_grouper(),
+                        samples_per_epoch=samples_per_epoch,
+                        nb_epoch=nb_epoch)
