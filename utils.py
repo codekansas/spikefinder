@@ -34,15 +34,13 @@ def generate_training_set(num_timesteps=100, batch_size=32):
                 the last interval (the model should try to predict this).
     """
 
-    num_timesteps += 1  # Add one, because we want to yield the last point too.
-
-    def _process_single_column(calcium_column, spikes_column, num_skip=1):
+    def _process_single_column(calcium_column, spikes_column):
         calcium_column = np.expand_dims(calcium_column, -1)
         spikes_column = np.cast['int32'](spikes_column)
         column_length = len(calcium_column) - np.sum(np.isnan(calcium_column))
 
         while True:  # Iterates infinitely.
-            idx = range(num_timesteps, column_length, num_skip)
+            idx = range(num_timesteps, column_length, num_timesteps)
             random.shuffle(idx)
             for i in idx:
                 yield (calcium_column[i - num_timesteps:i],
@@ -59,7 +57,7 @@ def generate_training_set(num_timesteps=100, batch_size=32):
         j = np.random.randint(0, len(pairs[i]))
         dataset = pairs[i]
         calcium, spikes = dataset[j].next()
-        yield i, calcium[1:], spikes[:-1], eye[spikes[-1]]
+        yield i, calcium, eye[spikes]
 
 
 def get_data_set(mode='train'):
