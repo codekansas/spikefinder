@@ -75,8 +75,8 @@ def build_model(num_timesteps):
                    mode='concat', concat_axis=-1)
 
     # Adds convolutional layers.
-    for _ in range(3):
-        hidden = inception_cell(hidden)
+    # for _ in range(3):
+    #     hidden = inception_cell(hidden)
 
     # Adds recurrent layers.
     hidden = Bidirectional(LSTM(64, return_sequences=True))(hidden)
@@ -109,8 +109,8 @@ if __name__ == '__main__':
         """Calculates Pearson correlation as a metric."""
 
         # Gets the argmax of each.
-        y_true = K.cast(K.argmax(y_true, axis=-1), 'float32')
         y_pred = K.cast(K.argmax(y_pred, axis=-1), 'float32')
+        y_true = K.cast(K.argmax(y_true, axis=-1), 'float32')
 
         x_mean = y_true - K.mean(y_true)
         y_mean = y_pred - K.mean(y_pred)
@@ -124,15 +124,16 @@ if __name__ == '__main__':
     def pearson_loss(y_true, y_pred):
         """Loss function to maximize pearson correlation. IN PROGRESS"""
 
-        x_mean = y_true - K.mean(K.cast(K.argmax(y_true, axis=-1), 'float32'))
-        y_mean = y_pred - K.mean(K.cast(K.argmax(y_pred, axis=-1), 'float32'))
+        range_var = K.reshape(K.arange(0, 7, dtype='float32'), (7, 1))
+        x_mean = K.squeeze(K.dot(y_true, range_var), 2)
+        y_mean = K.squeeze(K.dot(y_pred, range_var), 2)
 
         # Numerator and denominator.
-        n = K.sum(K.sum(x_mean * y_mean, axis=-1), axis=-1)
-        d = (K.sum(K.sum(K.square(x_mean), axis=2), axis=1) *
-             K.sum(K.sum(K.square(y_mean), axis=2), axis=1))
+        n = K.sum(x_mean * y_mean, axis=-1)
+        d = (K.sum(K.square(x_mean), axis=-1) *
+             K.sum(K.square(y_mean), axis=-1))
 
-        return -K.mean(n / (K.sqrt(d) + 1e-12))
+        return -K.mean(n / (K.sqrt(d + 1e-12)))
 
     def bin_percent(i):
         """Metric that keeps track of percentage of outputs in each bin."""
