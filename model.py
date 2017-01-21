@@ -137,7 +137,6 @@ def bin_percent(i):
 
 if __name__ == '__main__':
     num_timesteps = 100  # Sampling rate is 100 Hz
-    batches_per_epoch = 1000
     nb_epoch = 10
     batch_size = 32
 
@@ -148,18 +147,17 @@ if __name__ == '__main__':
             yield ([np.asarray(batched[i]) for i in range(2)],
                    [np.asarray(batched[2]),])
 
+    dataset, calcium, spikes = utils.get_training_set(num_timesteps)
+
     model = build_model(num_timesteps)
 
     # Loss functions: Try categorical crossentropy and pearson loss.
     model.compile(optimizer='adam', loss=pearson_loss,
                   metrics=[pearson_corr] + [bin_percent(i) for i in range(7)])
-
-    # TODO: The data generator could sample more from data which ends in a
-    # spike and less from data that doesn't end in a spike (this would avoid
-    # having to do the class weights).
-    model.fit_generator(_grouper(),
-                        samples_per_epoch=batches_per_epoch * batch_size,
-                        nb_epoch=nb_epoch)
+    model.fit([dataset, calcium], [spikes],
+              batch_size=batch_size,
+              nb_epoch=nb_epoch,
+              validation_split=0.1)
 
     # May be a good idea to train categorical crossentropy after training the
     # pearson correlation.

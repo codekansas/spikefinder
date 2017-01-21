@@ -60,6 +60,72 @@ def generate_training_set(num_timesteps=100, batch_size=32):
         yield i, calcium, eye[spikes]
 
 
+def get_training_set(num_timesteps=100, cache='/tmp/spikefinder_data.npz'):
+    """Builds the training set (as Numpy arrays rather than data).
+
+    Args:
+        num_timesteps: int, number of timesteps in each batch.
+        cache: str, where to cache the built dataset.
+
+    Returns:
+        tuple, (dataset, calcium, spikes)
+            dataset: Numpy integer array, the dataset in question.
+            calcium: Numpy float array, the calcium traces.
+            spikes: Numpy float array, the one-hot encoded spikes.
+    """
+
+    if not os.path.exists(cache):
+
+        def _process_single_column(calcium_column, spikes_column):
+            calcium_column = np.expand_dims(calcium_column, -1)
+            spikes_column = np.cast['int32'](spikes_column)
+            column_length = len(calcium_column) - np.sum(np.isnan(calcium_column))
+
+            eye = np.eye(7)
+
+            for i in range(num_timesteps, column_length, num_timesteps):
+                yield (calcium_column[i - num_timesteps:i],
+                       eye[spikes_column[i - num_timesteps:i]])
+
+        pairs = ([_process_single_column(c[:, i], s[:, i])
+                  for i in range(c.shape[1])]
+                 for c, s in get_data_set('train'))
+
+        # Builds actual arrays.
+        dataset_arr = []
+        calcium_arr = []
+        spikes_arr = []
+        for dataset, pair in enumerate(pairs):
+            dataset = np.asarray([dataset])
+            for calcium, spikes in itertools.chain.from_iterable(pair):
+                dataset_arr.append(dataset)
+                calcium_arr.append(calcium)
+                spikes_arr.append(spikes)
+
+        # Concatenates to one.
+        dataset_arr = np.stack(dataset_arr)
+        calcium_arr = np.stack(calcium_arr)
+        spikes_arr = np.stack(spikes_arr)
+
+        with open(cache, 'wb') as f:
+            np.savez(f,
+                     dataset=dataset_arr,
+                     calcium=calcium_arr,
+                     spikes=spikes_arr)
+
+    with open(cache, 'rb') as f:
+        npzfile = np.load(f)
+        dataset = npzfile['dataset']
+        calcium = npzfile['calcium']
+        spikes = npzfile['spikes']
+
+    if calcium.shape[1] != num_timesteps or spikes.shape[1] != num_timesteps:
+        raise ValueError('Old cached files were found at "%s". Delete these, '
+                         'then re-run.' % cache)
+
+    return dataset, calcium, spikes
+
+
 def get_data_set(mode='train'):
     """Loads datasets as Numpy arrays.
 
