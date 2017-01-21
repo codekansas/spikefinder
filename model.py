@@ -75,12 +75,12 @@ def build_model(num_timesteps):
                    mode='concat', concat_axis=-1)
 
     # Adds convolutional layers.
-    # for _ in range(3):
-    #     hidden = inception_cell(hidden)
+    for _ in range(3):
+        hidden = inception_cell(hidden)
 
     # Adds recurrent layers.
     hidden = Bidirectional(LSTM(64, return_sequences=True))(hidden)
-    # hidden = Bidirectional(LSTM(64, return_sequences=True))(hidden)
+    hidden = Bidirectional(LSTM(64, return_sequences=True))(hidden)
 
     # Adds output layer.
     output = TimeDistributed(Dense(7, activation='softmax',
@@ -90,6 +90,49 @@ def build_model(num_timesteps):
     model = Model(input=[dataset, calcium], output=[output])
 
     return model
+
+
+def pearson_corr(y_true, y_pred):
+    """Calculates Pearson correlation as a metric."""
+
+    # Gets the argmax of each.
+    y_pred = K.cast(K.argmax(y_pred, axis=-1), 'float32')
+    y_true = K.cast(K.argmax(y_true, axis=-1), 'float32')
+
+    x_mean = y_true - K.mean(y_true)
+    y_mean = y_pred - K.mean(y_pred)
+
+    # Numerator and denominator.
+    n = K.sum(x_mean * y_mean, axis=-1)
+    d = K.sum(K.square(x_mean), axis=-1) * K.sum(K.square(y_mean), axis=-1)
+
+    return K.mean(n / (K.sqrt(d) + 1e-12))
+
+
+def pearson_loss(y_true, y_pred):
+    """Loss function to maximize pearson correlation. IN PROGRESS"""
+
+    range_var = K.reshape(K.arange(0, 7, dtype='float32'), (7, 1))
+    x_mean = K.squeeze(K.dot(y_true, range_var), 2)
+    y_mean = K.squeeze(K.dot(y_pred, range_var), 2)
+
+    # Numerator and denominator.
+    n = K.sum(x_mean * y_mean, axis=-1)
+    d = (K.sum(K.square(x_mean), axis=-1) *
+         K.sum(K.square(y_mean), axis=-1))
+
+    return -K.mean(n / (K.sqrt(d + 1e-12)))
+
+
+def bin_percent(i):
+    """Metric that keeps track of percentage of outputs in each bin."""
+
+    def _prct(_, y_pred):
+        y_pred = K.argmax(y_pred, axis=-1)
+
+        return {str(i): K.mean(K.equal(y_pred, i))}
+
+    return _prct
 
 
 if __name__ == '__main__':
@@ -105,55 +148,11 @@ if __name__ == '__main__':
             yield ([np.asarray(batched[i]) for i in range(2)],
                    [np.asarray(batched[2]),])
 
-    def pearson_corr(y_true, y_pred):
-        """Calculates Pearson correlation as a metric."""
-
-        # Gets the argmax of each.
-        y_pred = K.cast(K.argmax(y_pred, axis=-1), 'float32')
-        y_true = K.cast(K.argmax(y_true, axis=-1), 'float32')
-
-        x_mean = y_true - K.mean(y_true)
-        y_mean = y_pred - K.mean(y_pred)
-
-        # Numerator and denominator.
-        n = K.sum(x_mean * y_mean, axis=-1)
-        d = K.sum(K.square(x_mean), axis=-1) * K.sum(K.square(y_mean), axis=-1)
-
-        return K.mean(n / (K.sqrt(d) + 1e-12))
-
-    def pearson_loss(y_true, y_pred):
-        """Loss function to maximize pearson correlation. IN PROGRESS"""
-
-        range_var = K.reshape(K.arange(0, 7, dtype='float32'), (7, 1))
-        x_mean = K.squeeze(K.dot(y_true, range_var), 2)
-        y_mean = K.squeeze(K.dot(y_pred, range_var), 2)
-
-        # Numerator and denominator.
-        n = K.sum(x_mean * y_mean, axis=-1)
-        d = (K.sum(K.square(x_mean), axis=-1) *
-             K.sum(K.square(y_mean), axis=-1))
-
-        return -K.mean(n / (K.sqrt(d + 1e-12)))
-
-    def bin_percent(i):
-        """Metric that keeps track of percentage of outputs in each bin."""
-
-        def _prct(_, y_pred):
-            y_pred = K.argmax(y_pred, axis=-1)
-
-            return {str(i): K.mean(K.equal(y_pred, i))}
-
-        return _prct
-
     model = build_model(num_timesteps)
-
-    # Determines class weights.
-    class_weights = dict((str(i), 1 / (2 ** (7 - i))) for i in range(7))
 
     # Loss functions: Try categorical crossentropy and pearson loss.
     model.compile(optimizer='adam', loss=pearson_loss,
-                  metrics=[pearson_corr] + [bin_percent(i) for i in range(7)],
-                  class_weights=class_weights)
+                  metrics=[pearson_corr] + [bin_percent(i) for i in range(7)])
 
     # TODO: The data generator could sample more from data which ends in a
     # spike and less from data that doesn't end in a spike (this would avoid
@@ -161,3 +160,6 @@ if __name__ == '__main__':
     model.fit_generator(_grouper(),
                         samples_per_epoch=batches_per_epoch * batch_size,
                         nb_epoch=nb_epoch)
+
+    # May be a good idea to train categorical crossentropy after training the
+    # pearson correlation.
