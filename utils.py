@@ -10,8 +10,65 @@ import os
 
 import numpy as np
 
+import keras.backend as K
+import tensorflow as tf
+
 
 _DOWNLOAD_URL = 'http://spikefinder.codeneuro.org/'
+
+
+def output_to_ints(spike_output):
+    """Converts spikes from range to integer values."""
+
+    return np.squeeze(np.floor(spike_output * 7))
+
+
+def pearson_corr(y_true, y_pred):
+    """Calculates Pearson correlation as a metric.
+
+    This calculates Pearson correlation the way that the competition calculates
+    it (as integer values from 0 to 7).
+
+    y_true and y_pred have shape (batch_size, num_timesteps, 1).
+    """
+
+    def _round_to_ints(x):
+        return K.squeeze(tf.floor(x * 7), -1)
+
+    y_true = _round_to_ints(y_true)
+    y_pred = _round_to_ints(y_pred)
+
+    x_mean = y_true - K.mean(y_true, axis=-1, keepdims=True)
+    y_mean = y_pred - K.mean(y_pred, axis=-1, keepdims=True)
+
+    # Numerator and denominator.
+    n = K.sum(x_mean * y_mean, axis=-1)
+    d = K.sum(K.square(x_mean), axis=-1) * K.sum(K.square(y_mean), axis=-1)
+
+    return K.mean(n / (K.sqrt(d) + 1e-12))
+
+
+def pearson_loss(y_true, y_pred):
+    """Loss function to maximize pearson correlation.
+
+    y_true and y_pred have shape (batch_size, num_timesteps, 1).
+    """
+
+    y_true = K.squeeze(y_true, -1)
+    y_pred = K.squeeze(y_pred, -1)
+
+    x_mean = y_true - K.mean(y_true, axis=-1, keepdims=True)
+    y_mean = y_pred - K.mean(y_pred, axis=-1, keepdims=True)
+
+    # Numerator and denominator.
+    n = K.sum(x_mean * y_mean, axis=-1)
+    d = (K.sum(K.square(x_mean), axis=-1) *
+         K.sum(K.square(y_mean), axis=-1))
+
+    corr = K.mean(n / (K.sqrt(d + 1e-12)))
+
+    # Maximize corr by minimizing negative.
+    return -corr
 
 
 def generate_training_set(num_timesteps=100, batch_size=32):
@@ -51,17 +108,57 @@ def generate_training_set(num_timesteps=100, batch_size=32):
               for i in range(calcium.shape[1])]
              for calcium, spikes in get_data_set('train')]
 
-    eye = np.eye(7)
     while True:
         i = np.random.randint(0, len(pairs))
         j = np.random.randint(0, len(pairs[i]))
         dataset = pairs[i]
         calcium, spikes = dataset[j].next()
-        yield i, calcium, eye[spikes]
+        yield i, calcium, spikes
 
+
+def get_eval(dataset, num_timesteps=100):
+    """Iterates through columns of the dataset.
+
+    Args:
+        dataset: str, "train" or "test".
+        num_timesteps: int, number of timesteps in each batch.
+
+    Yields:
+        Consult code (multiple layers).
+    """
+
+    def _process_single_column(calcium_column):
+        calcium_column = np.expand_dims(calcium_column, -1)
+        col_length = len(calcium_column) - np.sum(np.isnan(calcium_column))
+
+        arr_list = []
+        for i in range(0, col_length, num_timesteps):
+            x = np.zeros((num_timesteps, 1))  # Pads with zeros.
+            r = calcium_column[i:i + num_timesteps]
+            x[:r.shape[0]] = r
+            arr_list.append(x)
+
+        return col_length, np.stack(arr_list)
+
+    def _entry_iterator(data_entry):
+        for col_idx in range(data_entry.shape[1]):
+            col_length, data = _process_single_column(data_entry[:, col_idx])
+            yield col_idx, col_length, data
+
+    if dataset == 'train':
+        for d_idx, (data_entry, _) in enumerate(get_data_set('train')):
+            yield (d_idx, data_entry.shape, _entry_iterator(data_entry))
+
+    elif dataset == 'test':
+        for d_idx, data_entry in enumerate(get_data_set('test')):
+            yield (d_idx, data_entry.shape, _entry_iterator(data_entry))
+
+    else:
+        raise ValueError('Invalid dataset: "%s" (expected "train" or '
+                         '"test").' % dataset)
 
 def get_training_set(num_timesteps=100, cache='/tmp/spikefinder_data.npz'):
-    """Builds the training set (as Numpy arrays rather than data).
+    """Builds the training set (as Numpy arrays).
 
     Args:
         num_timesteps: int, number of timesteps in each batch.
@@ -78,14 +175,13 @@ def get_training_set(num_timesteps=100, cache='/tmp/spikefinder_data.npz'):
 
         def _process_single_column(calcium_column, spikes_column):
             calcium_column = np.expand_dims(calcium_column, -1)
-            spikes_column = np.cast['int32'](spikes_column)
-            column_length = len(calcium_column) - np.sum(np.isnan(calcium_column))
+            spikes_column = np.expand_dims(spikes_column, -1)
+            spikes_column = spikes_column / 6.
+            col_length = len(calcium_column) - np.sum(np.isnan(calcium_column))
 
-            eye = np.eye(7)
-
-            for i in range(num_timesteps, column_length, num_timesteps):
+            for i in range(num_timesteps, col_length, num_timesteps):
                 yield (calcium_column[i - num_timesteps:i],
-                       eye[spikes_column[i - num_timesteps:i]])
+                       spikes_column[i - num_timesteps:i])
 
         pairs = ([_process_single_column(c[:, i], s[:, i])
                   for i in range(c.shape[1])]
