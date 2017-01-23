@@ -66,8 +66,14 @@ def build_model(num_timesteps):
     flat = Flatten()(RepeatVector(num_timesteps)(dataset))
     data_emb = Embedding(10, 1, init='orthogonal')(flat)
 
+    # Concatenates calcium input with deltas.
+    delta_1 = utils.DeltaFeature()(calcium)
+    delta_2 = utils.DeltaFeature()(delta_1)
+    calcium_input = merge([calcium, delta_1, delta_2],
+                          mode='concat', concat_axis=-1)
+
     # Normalizes the data along the time dimension.
-    calcium_norm = BatchNormalization(mode=2, axis=1)(calcium)
+    calcium_norm = BatchNormalization(mode=2, axis=1)(calcium_input)
 
     # Merge channels together.
     hidden = merge([calcium_norm, data_emb],

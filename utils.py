@@ -10,11 +10,29 @@ import os
 
 import numpy as np
 
+from keras.layers import Layer
+
 import keras.backend as K
 import tensorflow as tf
 
 
 _DOWNLOAD_URL = 'http://spikefinder.codeneuro.org/'
+
+
+class DeltaFeature(Layer):
+    """Layer for calculating time-wise deltas."""
+
+    def build(self, input_shape):
+        if len(input_shape) != 3:
+            raise ValueError('DeltaFeature input should have three '
+                             'dimensions. Got %d.' % len(input_shape))
+        super(DeltaFeature, self).build(input_shape)
+
+    def call(self, x, mask=None):
+        return tf.concat_v2([x[:1], x[:-1]], 0)
+
+    def get_output_shape_for(self, input_shape):
+        return input_shape
 
 
 def pad_to_length(x, length, axis=0):
@@ -64,6 +82,7 @@ def pearson_loss(y_true, y_pred):
     y_true and y_pred have shape (batch_size, num_timesteps, 1).
     """
 
+    # Removes the last dimension.
     y_true = K.squeeze(y_true, -1)
     y_pred = K.squeeze(y_pred, -1)
 
@@ -75,10 +94,13 @@ def pearson_loss(y_true, y_pred):
     d = (K.sum(K.square(x_mean), axis=-1) *
          K.sum(K.square(y_mean), axis=-1))
 
-    corr = K.mean(n / (K.sqrt(d + 1e-12)))
-
     # Maximize corr by minimizing negative.
-    return -corr
+    loss = -n / (K.sqrt(d + 1e-12))
+
+    # Add a bit of MSE loss, to put stuff in the right place.
+    loss += K.mean(K.square(y_pred - y_true), axis=-1) * 0.1
+
+    return loss
 
 
 def bin_percent(i):
