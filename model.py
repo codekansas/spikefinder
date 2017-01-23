@@ -91,12 +91,14 @@ def build_model(num_timesteps):
 
 
 if __name__ == '__main__':
-    num_timesteps = 1000  # Sampling rate is 100 Hz.
+    # Sampling rate is 100 Hz.
+    num_timesteps = 100
+
     nb_epoch = 10
     batch_size = 32
     model_save_loc = '/tmp/best.keras_model'
     output_save_loc = '/tmp/'
-    train_on_subset = True  # Set this to train on a small subset of the data.
+    train_on_subset = False  # Set this to train on a small subset of the data.
 
     def _grouper():
         iterable = utils.generate_training_set(num_timesteps=num_timesteps)
@@ -111,7 +113,7 @@ if __name__ == '__main__':
         """Saves the predictions of the model."""
 
         for d_idx, output_shape, it in utils.get_eval(dataset):
-            file_name = '%d.train.spikes.csv' % (d_idx + 1)
+            file_name = '%d.%s.spikes.csv' % (d_idx + 1, dataset)
             file_path = os.path.join(output_save_loc, file_name)
             tmp_path = os.path.join(output_save_loc, 'tmp_' + file_name)
 
@@ -159,10 +161,13 @@ if __name__ == '__main__':
                                     save_weights_only=True,
                                     mode='max')
 
+    metrics = [utils.pearson_corr]
+    metrics += [utils.bin_percent(i) for i in range(7)]
+
     # Loss functions: Try categorical crossentropy and pearson loss.
     model.compile(optimizer='adam',
                   loss=utils.pearson_loss,
-                  metrics=[utils.pearson_corr])
+                  metrics=metrics)
     model.fit([dataset, calcium], [spikes],
               batch_size=batch_size,
               nb_epoch=nb_epoch,

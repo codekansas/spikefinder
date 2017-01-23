@@ -17,6 +17,16 @@ import tensorflow as tf
 _DOWNLOAD_URL = 'http://spikefinder.codeneuro.org/'
 
 
+def pad_to_length(x, length, axis=0):
+    """Pads `x` to length `length` along axis `axis`."""
+
+    s = list(x.shape)
+    s[axis] = length
+    z = np.zeros(s)
+    z[:x.shape[axis]] = x
+    return x
+
+
 def output_to_ints(spike_output):
     """Converts spikes from range to integer values."""
 
@@ -71,49 +81,15 @@ def pearson_loss(y_true, y_pred):
     return -corr
 
 
-def generate_training_set(num_timesteps=100, batch_size=32):
-    """Generates the training dataset.
+def bin_percent(i):
+    """Metric that keeps track of percentage of outputs in each bin."""
 
-    When choosing num_timesteps, keep in mind that a sampling rate of 100 Hz
-    was used to collect the data.
+    def _prct(_, y_pred):
+        y_pred = tf.floor(y_pred * 7)
 
-    Args:
-        num_timesteps: int, number of timesteps before and after to generate.
-        batch_size: int, number of samples per batch.
+        return {str(i): K.mean(K.equal(y_pred, i))}
 
-    Yields:
-        tuples (calcium, spikes, last_spike) where:
-            calcium: Numpy array with shape (num_timesteps, 1), where each
-                value represents the calcium recording at that timestep.
-            spikes: Numpy array with shape (num_timesteps - 1, 1), where each
-                value represents the number of spikes in that interval.
-            last_spike: Numpy array with shape (1), the number of spikes in
-                the last interval (the model should try to predict this).
-    """
-
-    def _process_single_column(calcium_column, spikes_column):
-        calcium_column = np.expand_dims(calcium_column, -1)
-        spikes_column = np.cast['int32'](spikes_column)
-        column_length = len(calcium_column) - np.sum(np.isnan(calcium_column))
-
-        while True:  # Iterates infinitely.
-            idx = range(num_timesteps, column_length, num_timesteps)
-            random.shuffle(idx)
-            for i in idx:
-                yield (calcium_column[i - num_timesteps:i],
-                       spikes_column[i - num_timesteps:i])
-
-    # Iterating this way avoids caching the results (i.e. itertools.repeat)
-    pairs = [[_process_single_column(calcium[:, i], spikes[:, i])
-              for i in range(calcium.shape[1])]
-             for calcium, spikes in get_data_set('train')]
-
-    while True:
-        i = np.random.randint(0, len(pairs))
-        j = np.random.randint(0, len(pairs[i]))
-        dataset = pairs[i]
-        calcium, spikes = dataset[j].next()
-        yield i, calcium, spikes
+    return _prct
 
 
 def get_eval(dataset, num_timesteps=100):
@@ -133,10 +109,7 @@ def get_eval(dataset, num_timesteps=100):
 
         arr_list = []
         for i in range(0, col_length, num_timesteps):
-            x = np.zeros((num_timesteps, 1))  # Pads with zeros.
-            r = calcium_column[i:i + num_timesteps]
-            x[:r.shape[0]] = r
-            arr_list.append(x)
+            arr_list.append(pad_to_length(calcium_column[i:i + num_timesteps]))
 
         return col_length, np.stack(arr_list)
 
@@ -180,8 +153,17 @@ def get_training_set(num_timesteps=100, cache='/tmp/spikefinder_data.npz'):
             col_length = len(calcium_column) - np.sum(np.isnan(calcium_column))
 
             for i in range(num_timesteps, col_length, num_timesteps):
-                yield (calcium_column[i - num_timesteps:i],
-                       spikes_column[i - num_timesteps:i])
+                yield (pad_to_length(calcium_column[i:i + num_timesteps],
+                                     num_timesteps),
+                       pad_to_length(spikes_column[i:i + num_timesteps],
+                                     num_timesteps))
+
+            for i in range(0, col_length, num_timesteps):
+                x = np.zeros((num_timesteps, 1))  # Pads with zeros.
+                r = calcium_column[i:i + num_timesteps]
+                x[:r.shape[0]] = r
+                arr_list.append(x)
+
 
         pairs = ([_process_single_column(c[:, i], s[:, i])
                   for i in range(c.shape[1])]
