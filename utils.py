@@ -29,7 +29,17 @@ class DeltaFeature(Layer):
         super(DeltaFeature, self).build(input_shape)
 
     def call(self, x, mask=None):
-        return tf.concat_v2([x[:1], x[:-1]], 0)
+        return K.concatenate([x[:1], x[:-1]], 0)
+
+    def get_output_shape_for(self, input_shape):
+        return input_shape
+
+
+class QuadFeature(Layer):
+    """Layer for calculating quadratic feature (square inputs)."""
+
+    def call(self, x, mask=None):
+        return K.square(x)
 
     def get_output_shape_for(self, input_shape):
         return input_shape
@@ -42,36 +52,34 @@ def pad_to_length(x, length, axis=0):
     s[axis] = length
     z = np.zeros(s)
     z[:x.shape[axis]] = x
-    return x
+    return z
 
 
 def output_to_ints(spike_output):
     """Converts spikes from range to integer values."""
 
-    return np.squeeze(np.floor(spike_output * 7))
+    return np.squeeze(np.floor(spike_output))
 
 
 def pearson_corr(y_true, y_pred):
     """Calculates Pearson correlation as a metric.
 
     This calculates Pearson correlation the way that the competition calculates
-    it (as integer values from 0 to 7).
+    it (as integer values).
 
     y_true and y_pred have shape (batch_size, num_timesteps, 1).
     """
 
-    def _round_to_ints(x):
-        return K.squeeze(tf.floor(x * 7), -1)
+    y_true = K.squeeze(tf.floor(y_true), 2)
+    y_pred = K.squeeze(tf.floor(y_pred), 2)
 
-    y_true = _round_to_ints(y_true)
-    y_pred = _round_to_ints(y_pred)
-
-    x_mean = y_true - K.mean(y_true, axis=-1, keepdims=True)
-    y_mean = y_pred - K.mean(y_pred, axis=-1, keepdims=True)
+    x_mean = y_true - K.mean(y_true, axis=1, keepdims=True)
+    y_mean = y_pred - K.mean(y_pred, axis=1, keepdims=True)
 
     # Numerator and denominator.
-    n = K.sum(x_mean * y_mean, axis=-1)
-    d = K.sum(K.square(x_mean), axis=-1) * K.sum(K.square(y_mean), axis=-1)
+    n = K.sum(x_mean * y_mean, axis=1)
+    d = (K.sum(K.square(x_mean), axis=1) *
+         K.sum(K.square(y_mean), axis=1))
 
     return K.mean(n / (K.sqrt(d) + 1e-12))
 
@@ -83,33 +91,37 @@ def pearson_loss(y_true, y_pred):
     """
 
     # Removes the last dimension.
-    y_true = K.squeeze(y_true, -1)
-    y_pred = K.squeeze(y_pred, -1)
+    y_true = K.squeeze(y_true, 2)
+    y_pred = K.squeeze(y_pred, 2)
 
-    x_mean = y_true - K.mean(y_true, axis=-1, keepdims=True)
-    y_mean = y_pred - K.mean(y_pred, axis=-1, keepdims=True)
+    x_mean = y_true - K.mean(y_true, axis=1, keepdims=True)
+    y_mean = y_pred - K.mean(y_pred, axis=1, keepdims=True)
 
     # Numerator and denominator.
-    n = K.sum(x_mean * y_mean, axis=-1)
-    d = (K.sum(K.square(x_mean), axis=-1) *
-         K.sum(K.square(y_mean), axis=-1))
+    n = K.sum(x_mean * y_mean, axis=1)
+    d = (K.sum(K.square(x_mean), axis=1) *
+         K.sum(K.square(y_mean), axis=1))
 
     # Maximize corr by minimizing negative.
-    loss = -n / (K.sqrt(d + 1e-12))
+    corr = n / (K.sqrt(d + 1e-12))
 
     # Add a bit of MSE loss, to put stuff in the right place.
-    loss += K.mean(K.square(y_pred - y_true), axis=-1) * 0.1
+    # loss = K.mean(K.square(y_pred - y_true), axis=-1) * 0.1
 
-    return loss
+    return -corr
 
 
 def bin_percent(i):
     """Metric that keeps track of percentage of outputs in each bin."""
 
-    def _prct(_, y_pred):
-        y_pred = tf.floor(y_pred * 7)
+    def _prct(y_true, y_pred):
+        y_true = tf.floor(y_true)
+        y_pred = tf.floor(y_pred)
 
-        return {str(i): K.mean(K.equal(y_pred, i))}
+        return {
+            '%d' % i: K.mean(K.equal(y_pred, i)),
+            # '%d_true' % i: K.mean(K.equal(y_true, i)),
+        }
 
     return _prct
 
@@ -128,6 +140,9 @@ def get_eval(dataset, num_timesteps=100):
     def _process_single_column(calcium_column):
         calcium_column = np.expand_dims(calcium_column, -1)
         col_length = len(calcium_column) - np.sum(np.isnan(calcium_column))
+
+        # Removes the NaN values.
+        calcium_column = calcium_column[:col_length]
 
         arr_list = []
         for i in range(0, col_length, num_timesteps):
@@ -171,21 +186,17 @@ def get_training_set(num_timesteps=100, cache='/tmp/spikefinder_data.npz'):
         def _process_single_column(calcium_column, spikes_column):
             calcium_column = np.expand_dims(calcium_column, -1)
             spikes_column = np.expand_dims(spikes_column, -1)
-            spikes_column = spikes_column / 6.
             col_length = len(calcium_column) - np.sum(np.isnan(calcium_column))
+
+            # Removes the NaN values.
+            calcium_column = calcium_column[:col_length]
+            spikes_column = spikes_column[:col_length]
 
             for i in range(num_timesteps, col_length, num_timesteps):
                 yield (pad_to_length(calcium_column[i:i + num_timesteps],
                                      num_timesteps),
                        pad_to_length(spikes_column[i:i + num_timesteps],
                                      num_timesteps))
-
-            for i in range(0, col_length, num_timesteps):
-                x = np.zeros((num_timesteps, 1))  # Pads with zeros.
-                r = calcium_column[i:i + num_timesteps]
-                x[:r.shape[0]] = r
-                arr_list.append(x)
-
 
         pairs = ([_process_single_column(c[:, i], s[:, i])
                   for i in range(c.shape[1])]

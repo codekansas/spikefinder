@@ -62,21 +62,28 @@ def build_model(num_timesteps):
     dataset = Input(shape=(1,), dtype='int32', name='dataset')
     calcium = Input(shape=(num_timesteps, 1), dtype='float32', name='calcium')
 
+    # Adds some more features from the calcium data.
+    calcium_bn = BatchNormalization(axis=1)(calcium)
+    calcium_sq = utils.QuadFeature()(calcium_bn)
+
+    delta_1 = utils.DeltaFeature()(calcium_bn)
+    delta_1_sq = utils.QuadFeature()(delta_1)
+
+    delta_2 = utils.DeltaFeature()(delta_1)
+    delta_2_sq = utils.QuadFeature()(delta_2)
+
+    calcium_input = merge([calcium_bn, calcium_sq,
+                           delta_1, delta_1_sq,
+                           delta_2, delta_2_sq],
+                          mode='concat', concat_axis=2)
+    calcium_norm = BatchNormalization(axis=1)(calcium_input)
+
     # Embed dataset into vector space.
     flat = Flatten()(RepeatVector(num_timesteps)(dataset))
     data_emb = Embedding(10, 1, init='orthogonal')(flat)
 
-    # Concatenates calcium input with deltas.
-    delta_1 = utils.DeltaFeature()(calcium)
-    delta_2 = utils.DeltaFeature()(delta_1)
-    calcium_input = merge([calcium, delta_1, delta_2],
-                          mode='concat', concat_axis=-1)
-
-    # Normalizes the data along the time dimension.
-    calcium_norm = BatchNormalization(mode=2, axis=1)(calcium_input)
-
     # Merge channels together.
-    hidden = merge([calcium_norm, data_emb],
+    hidden = merge([calcium_input, data_emb],
                    mode='concat', concat_axis=-1)
 
     # Adds convolutional layers.
@@ -84,11 +91,11 @@ def build_model(num_timesteps):
         hidden = inception_cell(hidden)
 
     # Adds recurrent layers.
-    hidden = Bidirectional(LSTM(64, return_sequences=True))(hidden)
-    hidden = Bidirectional(LSTM(64, return_sequences=True))(hidden)
+    # hidden = Bidirectional(LSTM(64, return_sequences=True))(hidden)
+    # hidden = Bidirectional(LSTM(64, return_sequences=True))(hidden)
 
     # Adds output layer.
-    output = TimeDistributed(Dense(1, activation='sigmoid'))(hidden)
+    output = TimeDistributed(Dense(1, activation='softplus'))(hidden)
 
     # Builds the model.
     model = Model(input=[dataset, calcium], output=[output])
@@ -104,7 +111,7 @@ if __name__ == '__main__':
     batch_size = 32
     model_save_loc = '/tmp/best.keras_model'
     output_save_loc = '/tmp/'
-    train_on_subset = False  # Set this to train on a small subset of the data.
+    train_on_subset = True  # Set this to train on a small subset of the data.
 
     def _grouper():
         iterable = utils.generate_training_set(num_timesteps=num_timesteps)
