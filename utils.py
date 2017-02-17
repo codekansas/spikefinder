@@ -90,10 +90,6 @@ def pearson_loss(y_true, y_pred):
     y_true and y_pred have shape (batch_size, num_timesteps, 1).
     """
 
-    # Removes the last dimension.
-    y_true = K.squeeze(y_true, 2)
-    y_pred = K.squeeze(y_pred, 2)
-
     x_mean = y_true - K.mean(y_true, axis=1, keepdims=True)
     y_mean = y_pred - K.mean(y_pred, axis=1, keepdims=True)
 
@@ -109,6 +105,17 @@ def pearson_loss(y_true, y_pred):
     # loss = K.mean(K.square(y_pred - y_true), axis=-1) * 0.1
 
     return -corr
+
+
+def stats(_, y_pred):
+    """Metric that keeps track of some statistics."""
+
+    return {
+        'mean': K.mean(y_pred),
+        # 'max': K.max(y_pred),
+        # 'min': K.min(y_pred),
+        'std': K.std(y_pred),
+    }
 
 
 def bin_percent(i):
@@ -146,7 +153,8 @@ def get_eval(dataset, num_timesteps=100):
 
         arr_list = []
         for i in range(0, col_length, num_timesteps):
-            arr_list.append(pad_to_length(calcium_column[i:i + num_timesteps]))
+            arr_list.append(pad_to_length(calcium_column[i:i + num_timesteps],
+                                          num_timesteps))
 
         return col_length, np.stack(arr_list)
 
@@ -167,12 +175,15 @@ def get_eval(dataset, num_timesteps=100):
         raise ValueError('Invalid dataset: "%s" (expected "train" or '
                          '"test").' % dataset)
 
-def get_training_set(num_timesteps=100, cache='/tmp/spikefinder_data.npz'):
+def get_training_set(num_timesteps=100,
+                     cache='/tmp/spikefinder_data.npz',
+                     rebuild=False):
     """Builds the training set (as Numpy arrays).
 
     Args:
         num_timesteps: int, number of timesteps in each batch.
         cache: str, where to cache the built dataset.
+        rebuild: bool, if set, ignore the cache.
 
     Returns:
         tuple, (dataset, calcium, spikes)
@@ -181,7 +192,7 @@ def get_training_set(num_timesteps=100, cache='/tmp/spikefinder_data.npz'):
             spikes: Numpy float array, the one-hot encoded spikes.
     """
 
-    if not os.path.exists(cache):
+    if not os.path.exists(cache) or rebuild:
 
         def _process_single_column(calcium_column, spikes_column):
             calcium_column = np.expand_dims(calcium_column, -1)
@@ -192,7 +203,7 @@ def get_training_set(num_timesteps=100, cache='/tmp/spikefinder_data.npz'):
             calcium_column = calcium_column[:col_length]
             spikes_column = spikes_column[:col_length]
 
-            for i in range(num_timesteps, col_length, num_timesteps):
+            for i in range(0, col_length, num_timesteps):
                 yield (pad_to_length(calcium_column[i:i + num_timesteps],
                                      num_timesteps),
                        pad_to_length(spikes_column[i:i + num_timesteps],
