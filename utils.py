@@ -13,7 +13,11 @@ import numpy as np
 from keras.layers import Layer
 
 import keras.backend as K
-import tensorflow as tf
+
+if K.backend() == 'tensorflow':
+    from tensorflow import floor
+else:
+    from theano.tensor import floor
 
 
 _DOWNLOAD_URL = 'http://spikefinder.codeneuro.org/'
@@ -29,7 +33,9 @@ class DeltaFeature(Layer):
         super(DeltaFeature, self).build(input_shape)
 
     def call(self, x, mask=None):
-        return K.concatenate([x[:1], x[:-1]], 0)
+        x_a, x_b = K.zeros_like(x[:, 1:]), x[:, :1]
+        x_shifted = K.concatenate([x_a, x_b], axis=1)
+        return x - x_shifted
 
     def get_output_shape_for(self, input_shape):
         return input_shape
@@ -61,7 +67,13 @@ def output_to_ints(spike_output):
     return np.squeeze(np.floor(spike_output))
 
 
-def pearson_corr(y_true, y_pred):
+def _normalize(i):
+    min_v = K.min(i)
+    max_v = K.max(i)
+    return (i - min_v) * 2 / (max_v - min_v + 1e-7)
+
+
+def pearson_corr(y_true, y_pred, pre_floor=False, normalize=False):
     """Calculates Pearson correlation as a metric.
 
     This calculates Pearson correlation the way that the competition calculates
@@ -70,8 +82,15 @@ def pearson_corr(y_true, y_pred):
     y_true and y_pred have shape (batch_size, num_timesteps, 1).
     """
 
-    y_true = K.squeeze(tf.floor(y_true), 2)
-    y_pred = K.squeeze(tf.floor(y_pred), 2)
+    if normalize:
+        y_pred = _normalize(y_pred)
+
+    if pre_floor:
+        y_true = K.squeeze(floor(y_true), 2)
+        y_pred = K.squeeze(floor(y_pred), 2)
+    else:
+        y_true = K.squeeze(y_true, 2)
+        y_pred = K.squeeze(y_pred, 2)
 
     x_mean = y_true - K.mean(y_true, axis=1, keepdims=True)
     y_mean = y_pred - K.mean(y_pred, axis=1, keepdims=True)
@@ -84,11 +103,14 @@ def pearson_corr(y_true, y_pred):
     return K.mean(n / (K.sqrt(d) + 1e-12))
 
 
-def pearson_loss(y_true, y_pred):
+def pearson_loss(y_true, y_pred, depth=1, normalize=False):
     """Loss function to maximize pearson correlation.
 
     y_true and y_pred have shape (batch_size, num_timesteps, 1).
     """
+
+    if normalize:
+        y_pred = _normalize(y_pred)
 
     x_mean = y_true - K.mean(y_true, axis=1, keepdims=True)
     y_mean = y_pred - K.mean(y_pred, axis=1, keepdims=True)
@@ -100,11 +122,20 @@ def pearson_loss(y_true, y_pred):
 
     # Maximize corr by minimizing negative.
     corr = n / (K.sqrt(d + 1e-12))
+    loss = -corr
 
     # Add a bit of MSE loss, to put stuff in the right place.
     # loss = K.mean(K.square(y_pred - y_true), axis=-1) * 0.1
 
-    return -corr
+    if depth > 0:
+        _pool = lambda x: x[:, 1:] + x[:, :-1]
+        loss = loss + 2 * pearson_loss(
+                y_true=_pool(y_true),
+                y_pred=_pool(y_pred),
+                depth=depth - 1,
+                normalize=False)
+
+    return loss
 
 
 def stats(_, y_pred):
@@ -194,58 +225,85 @@ def get_training_set(num_timesteps=100,
 
     if not os.path.exists(cache) or rebuild:
 
-        def _process_single_column(calcium_column, spikes_column):
-            calcium_column = np.expand_dims(calcium_column, -1)
-            spikes_column = np.expand_dims(spikes_column, -1)
-            col_length = len(calcium_column) - np.sum(np.isnan(calcium_column))
+        def _process_data_set(calcium, spikes):
+            col_lens = calcium.shape[0] - np.sum(np.isnan(calcium), axis=0)
+            calcium = np.expand_dims(calcium, -1)
+            spikes = np.expand_dims(spikes, -1)
 
-            # Removes the NaN values.
-            calcium_column = calcium_column[:col_length]
-            spikes_column = spikes_column[:col_length]
+            # Converts NaNs to 0s.
+            calcium_c = np.nan_to_num(calcium)
+            spikes_c = np.nan_to_num(spikes)
 
-            for i in range(0, col_length, num_timesteps):
-                yield (pad_to_length(calcium_column[i:i + num_timesteps],
-                                     num_timesteps),
-                       pad_to_length(spikes_column[i:i + num_timesteps],
-                                     num_timesteps))
+            calcium_n = calcium / np.linalg.norm(calcium_c)
 
-        pairs = ([_process_single_column(c[:, i], s[:, i])
-                  for i in range(c.shape[1])]
-                 for c, s in get_data_set('train'))
+            step_size = num_timesteps  # // 3
+            calcium_stats = np.concatenate(
+                    [np.nanmean(calcium, axis=1),
+                     np.nanstd(calcium, axis=1),
+                     np.nanmedian(calcium, axis=1),
+                     np.nanmean(calcium_n, axis=1),
+                     np.nanstd(calcium_n, axis=1),
+                     np.nanmedian(calcium_n, axis=1)],
+                    axis=1)
+
+            def _pad(x, i):
+                return pad_to_length(x[i:i + num_timesteps], num_timesteps)
+
+            for i in range(calcium.shape[1]):
+                for j in range(0, col_lens[i] - step_size, step_size):
+                    yield (_pad(calcium_c[:, i], j),
+                           _pad(spikes_c[:, i], j),
+                           _pad(calcium_stats, j))
+
+        pairs = (_process_data_set(c, s) for c, s in get_data_set('train'))
 
         # Builds actual arrays.
         dataset_arr = []
         calcium_arr = []
+        calcium_stats_arr = []
         spikes_arr = []
         for dataset, pair in enumerate(pairs):
             dataset = np.asarray([dataset])
-            for calcium, spikes in itertools.chain.from_iterable(pair):
+            for c, s, c_stats in pair:
                 dataset_arr.append(dataset)
-                calcium_arr.append(calcium)
-                spikes_arr.append(spikes)
+                calcium_arr.append(c)
+                calcium_stats_arr.append(c_stats)
+                spikes_arr.append(s)
+            print('processed %d datasets' % dataset)
 
         # Concatenates to one.
         dataset_arr = np.stack(dataset_arr)
         calcium_arr = np.stack(calcium_arr)
+        calcium_stats_arr = np.stack(calcium_stats_arr)
         spikes_arr = np.stack(spikes_arr)
+
+        # Shuffles along the batch axis.
+        idx = np.arange(dataset_arr.shape[0])
+        np.random.shuffle(idx)
+        dataset_arr = dataset_arr[idx]
+        calcium_arr = calcium_arr[idx]
+        calcium_stats_arr = calcium_stats_arr[idx]
+        spikes_arr = spikes_arr[idx]
 
         with open(cache, 'wb') as f:
             np.savez(f,
                      dataset=dataset_arr,
                      calcium=calcium_arr,
+                     calcium_stats=calcium_stats_arr,
                      spikes=spikes_arr)
 
     with open(cache, 'rb') as f:
         npzfile = np.load(f)
         dataset = npzfile['dataset']
         calcium = npzfile['calcium']
+        calcium_stats = npzfile['calcium_stats']
         spikes = npzfile['spikes']
 
-    if calcium.shape[1] != num_timesteps or spikes.shape[1] != num_timesteps:
+    if calcium.shape[1] != num_timesteps:
         raise ValueError('Old cached files were found at "%s". Delete these, '
                          'then re-run.' % cache)
 
-    return dataset, calcium, spikes
+    return dataset, calcium, calcium_stats, spikes
 
 
 def get_data_set(mode='train'):
