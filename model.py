@@ -132,7 +132,58 @@ def build_model(num_timesteps,
 def evaluate(model, args, mode='train'):
     """Evaluates and saves to CSV."""
 
-    raise NotImplementedError('TODO')
+    def _get_inputs(calcium, calcium_stats, dataset):
+        """Gets inputs specified by the user."""
+
+        inputs = [calcium]
+        if not args.ignore_calcium_stats:
+            inputs.append(calcium_stats)
+        if not args.ignore_dataset:
+            inputs.append(dataset)
+        return inputs
+
+    def _get_single_column(calcium, calcium_stats, dataset):
+        return model.predict(_get_inputs(calcium, calcium_stats, dataset))
+
+    for filename, output_shape, data in utils.get_testing_set(
+            args.num_timesteps,
+            args.buffer_length,
+            mode=mode):
+
+        # Initializes a NaN array.
+        output_arr = np.empty(output_shape)
+        output_arr[:] = np.NAN
+        output_arr[:args.buffer_length] = 0
+
+        for cidx, (col_len, calcium, calcium_stats, dataset) in enumerate(data):
+            preds = _get_single_column(calcium, calcium_stats, dataset)
+
+            # The predictions won't have the start and end bits.
+            preds = preds.reshape(-1)[:col_len - 2 * args.buffer_length]
+
+            # Cuts off the beginning and end (no predictions).
+            min_idx, max_idx = args.buffer_length, col_len - args.buffer_length
+
+            # Puts the predictions in the right place.
+            output_arr[min_idx:max_idx, cidx] = preds
+
+            # Adds start and end bits; just the mean value.
+            mean_v = np.mean(preds)
+            output_arr[:min_idx, cidx] = mean_v
+            output_arr[max_idx:col_len, cidx] = mean_v
+
+        # Saves the output of the array.
+        np.savetxt(filename,
+            output_arr,
+            fmt='%.5f',
+            delimiter=',',
+            header=','.join(str(i) for i in range(output_shape[1])),
+            comments='')
+
+        # Removes 'nan' from the file.
+        utils.remove_string(filename, 'nan')
+
+        print('Saved "%s".' % filename)
 
 
 if __name__ == '__main__':
@@ -315,4 +366,5 @@ if __name__ == '__main__':
 
     # Runs the evaluation script.
     if args.evaluate:
-        evaluate(model, args)
+        evaluate(model, args, mode='train')
+        evaluate(model, args, mode='test')

@@ -195,18 +195,19 @@ def bin_percent(i):
     return _prct
 
 
-def _process_data_set(num_timesteps, calcium, spikes=None, step_size=None):
-    """Internal function for processing a dataset."""
+def _get_calcium_stats(calcium):
+    """Gets statistics about the calcium trace.
 
-    col_lens = calcium.shape[0] - np.sum(np.isnan(calcium), axis=0)
-    calcium = np.expand_dims(calcium, -1)
+    Args:
+        calcium: numpy array with shape (num_timesteps, num_channels) and with
+            NaN values remaining.
 
-    # Converts NaNs to 0s.
+    Returns:
+        calcium_stats: numpy array with shape (num_timesteps).
+    """
+
     calcium_c = np.nan_to_num(calcium)
     calcium_n = calcium / np.linalg.norm(calcium_c)
-
-    if step_size is None:
-        step_size = num_timesteps // 2
 
     calcium_stats = np.concatenate(
             [np.nanmean(calcium, axis=1),
@@ -217,23 +218,72 @@ def _process_data_set(num_timesteps, calcium, spikes=None, step_size=None):
              np.nanmedian(calcium_n, axis=1)],
             axis=1)
 
-    def _pad(x, i):
-        return pad_to_length(x[i:i + num_timesteps], num_timesteps)
+    return calcium_stats
 
-    if spikes is None:
-        for i in range(calcium.shape[1]):
-            for j in range(0, col_lens[i] - step_size, step_size):
-                yield (_pad(calcium[:, i], j),
-                       _pad(calcium_c[:, i], j),
-                       _pad(calcium_stats, j), i)
+
+def get_testing_set(num_timesteps, buffer_length, mode='train'):
+    """Gets data that can be used for testing the model."""
+
+    # Gets the appropriate data iterator.
+    if mode == 'train':
+        iterator = (c for c, _ in get_data_set('train'))
+    elif mode == 'test':
+        iterator = (c for c, in get_data_set('test'))
     else:
-        spikes = np.expand_dims(spikes, -1)
-        spikes_c = np.nan_to_num(spikes)
+        raise ValueError('Invalid mode: "%s".' % mode)
+
+    def _process_data_set(dataset, calcium):
+        """Internal function for processing a dataset."""
+
+        # Gets the length of each column.
+        col_lens = calcium.shape[0] - np.sum(np.isnan(calcium), axis=0)
+        calcium = np.expand_dims(calcium, -1)
+
+        # Gets statistics about the calcium trace.
+        calcium_stats = _get_calcium_stats(calcium)
+        calcium = np.nan_to_num(calcium)
+
+        # Step size: Move this much for each data iteration.
+        step_size = num_timesteps - 2 * buffer_length
+
+        def _pad(x, i):
+            return pad_to_length(x[i:i + num_timesteps], num_timesteps)
+
+        def _process_single_column(column, col_len):
+            """Returns Numpy array of the single-column data."""
+
+            iter_range = range(0, col_len, step_size)
+            col_data = np.stack([_pad(column, j) for j in iter_range])
+            stats_data = np.stack([_pad(calcium_stats, j) for j in iter_range])
+            dataset_data = np.stack([dataset] for _ in iter_range)
+
+            return col_len, col_data, stats_data, dataset_data
+
+        # Yields consecutive columns in the dataset.
         for i in range(calcium.shape[1]):
-            for j in range(0, col_lens[i] - step_size, step_size):
-                yield (_pad(calcium_c[:, i], j),
-                       _pad(spikes_c[:, i], j),
-                       _pad(calcium_stats, j), i)
+            yield _process_single_column(calcium[:, i], col_lens[i])
+
+    for dataset, calcium in enumerate(iterator):
+
+        # This is the output filename for the final dataset.
+        filename = '/tmp/%d.%s.spikes.csv' % (dataset + 1, mode)
+
+        yield filename, calcium.shape, _process_data_set(dataset, calcium)
+
+
+def remove_string(filename, string):
+    """Removes all instances of a string from a file."""
+
+    # Reads from the file.
+    lines = []
+    with open(filename, 'rb') as fin:
+        for line in fin:
+            lines.append(line.replace('nan', ''))
+
+    # Writes result to the file.
+    with open(filename, 'wb') as fout:
+        for line in lines:
+            fout.write(line.replace('nan', ''))
 
 
 def get_training_set(buffer_length,
@@ -244,8 +294,39 @@ def get_training_set(buffer_length,
     """Builds the training set (as Numpy arrays)."""
 
     if not os.path.exists(cache) or rebuild:
+
+        def _process_data_set(num_timesteps, calcium, spikes, step_size):
+            """Internal function for processing a dataset."""
+
+            col_lens = calcium.shape[0] - np.sum(np.isnan(calcium), axis=0)
+            calcium = np.expand_dims(calcium, -1)
+
+            # Gets statistics about the calcium trace.
+            calcium_stats = _get_calcium_stats(calcium)
+            calcium = np.nan_to_num(calcium)
+
+            if step_size is None:
+                step_size = num_timesteps // 2
+
+            def _pad(x, i):
+                return pad_to_length(x[i:i + num_timesteps], num_timesteps)
+
+            if spikes is None:
+                for i in range(calcium.shape[1]):
+                    for j in range(0, col_lens[i] - step_size, step_size):
+                        yield (_pad(calcium[:, i], j),
+                               _pad(calcium_stats, j))
+            else:
+                spikes = np.expand_dims(spikes, -1)
+                spikes = np.nan_to_num(spikes)
+                for i in range(calcium.shape[1]):
+                    for j in range(0, col_lens[i] - step_size, step_size):
+                        yield (_pad(calcium[:, i], j),
+                               _pad(spikes[:, i], j),
+                               _pad(calcium_stats, j))
+
         step_size = num_timesteps - 2 * buffer_length
-        pairs = (_process_data_set(num_timesteps, c, s, step_size=step_size)
+        pairs = (_process_data_set(num_timesteps, c, s, step_size)
                  for c, s in get_data_set('train'))
 
         # Builds actual arrays.
