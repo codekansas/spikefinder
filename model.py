@@ -15,6 +15,7 @@ import keras.backend as K
 from keras import optimizers
 from keras.callbacks import ModelCheckpoint
 
+from keras.layers import Activation
 from keras.layers import AveragePooling1D
 from keras.layers import BatchNormalization
 from keras.layers import Bidirectional
@@ -43,8 +44,7 @@ from keras.models import load_model
 def build_model(num_timesteps,
         buffer_length,
         use_dataset,
-        use_calcium_stats,
-        num_init_convs=512):
+        use_calcium_stats):
     calcium = Input(shape=(num_timesteps, 1), dtype='float32', name='calcium')
     inputs = [calcium]
 
@@ -65,36 +65,58 @@ def build_model(num_timesteps,
     # Merge channels together.
     x = merge([x, delta_1, delta_2, quad_1, quad_2, quad_3],
                mode='concat', concat_axis=-1)
-    x = BatchNormalization(axis=1)(x)  # normalize across time.
+    # x = BatchNormalization(axis=1)(x)  # normalize across time.
 
     # Extracts first-level (dataset-independent) features.
-    x = Convolution1D(num_init_convs, 20,
+    x = Convolution1D(32, 2,
             init='glorot_normal',
             border_mode='same',
-            activation='tanh')(x)
-    x = Dropout(0.5)(x)
+            activation='relu')(x)
+    # x = Dropout(0.5)(x)
+    x = BatchNormalization(axis=1)(x)  # normalize across time.
 
     if use_dataset:
         dataset = Input(shape=(1,), dtype='int32', name='dataset')
         inputs.append(dataset)
-        d_emb = Flatten()(Embedding(10, num_init_convs)(dataset))
+        d_emb = Flatten()(Embedding(10, 32)(dataset))
+        d_emb = Activation('tanh')(d_emb)
         x = Lambda(lambda x: x * K.expand_dims(d_emb, 1))(x)
 
     # x = LSTM(512, return_sequences=True, forget_bias_init='one')(x)
 
     # Given weighed first-level features, look for second-level features.
-    x = Convolution1D(512, 20,
-        activation='tanh',
+    x = Convolution1D(64, 16,
+        activation='relu',
+        border_mode='same')(x)
+    x = BatchNormalization(axis=1)(x)  # normalize across time.
+
+    x = Convolution1D(128, 8,
+        activation='relu',
+        border_mode='same')(x)
+    x = BatchNormalization(axis=1)(x)  # normalize across time.
+
+    x = Convolution1D(256, 4,
+        activation='relu',
+        border_mode='same')(x)
+    x = BatchNormalization(axis=1)(x)  # normalize across time.
+
+    x = Convolution1D(512, 2,
+        activation='relu',
+        border_mode='same')(x)
+    x = BatchNormalization(axis=1)(x)  # normalize across time.
+
+    x = Convolution1D(1024, 1,
+        activation='relu',
         border_mode='same')(x)
     x = Dropout(0.5)(x)
 
-    x = Convolution1D(512, 1,
-        activation='tanh',
-        border_mode='same')(x)
-    x = Dropout(0.5)(x)
+    # x = Convolution1D(512, 1,
+    #     activation='tanh',
+    #     border_mode='same')(x)
+    # x = Dropout(0.5)(x)
 
     x = Convolution1D(1, 1,
-        activation='sigmoid',
+        activation=None,
         border_mode='same',
         W_regularizer='l2',
         init='glorot_normal')(x)
@@ -107,44 +129,10 @@ def build_model(num_timesteps,
     return model
 
 
-def _save_predictions(model, dataset):
-    """Saves the predictions of the model."""
+def evaluate(model, args, mode='train'):
+    """Evaluates and saves to CSV."""
 
-    raise NotImplementedError('Need to redo this part.')
-
-    for d_idx, output_shape, it in utils.get_eval(dataset):
-        file_name = '%d.%s.spikes.csv' % (d_idx + 1, dataset)
-        file_path = os.path.join(output_save_loc, file_name)
-        tmp_path = os.path.join(output_save_loc, 'tmp_' + file_name)
-
-        # Initializes a NaN array to store the outputs.
-        arr = np.empty(output_shape)
-        arr[:] = np.NAN
-
-        for c_idx, data_len, data in it:
-            print('%d/%d' % (c_idx + 1, output_shape[1]))
-            d_v = np.cast['int32'](np.ones((data.shape[0], 1)) * d_idx)
-            model_preds = model.predict([d_v, data],
-                                        verbose=1,
-                                        batch_size=100)
-            model_preds = np.reshape(model_preds, (-1,))
-            model_preds = utils.output_to_ints(model_preds[:data_len])
-            arr[:model_preds.shape[0], c_idx] = model_preds
-
-        np.savetxt(tmp_path,
-                   arr,
-                   fmt='%.0f',
-                   delimiter=',',
-                   header=','.join(str(i) for i in range(output_shape[1])),
-                   comments='')
-
-        # Replaces NaNs with empty.
-        with open(tmp_path, 'rb') as fin:
-            with open(file_path, 'wb') as fout:
-                for line in fin:
-                    fout.write(line.replace('nan', ''))
-
-        print('Saved "%s".' % file_path)
+    raise NotImplementedError('TODO')
 
 
 if __name__ == '__main__':
@@ -186,7 +174,7 @@ if __name__ == '__main__':
             type=str,
             help='where to save the outputs')
     parser.add_argument('--buffer-length',
-            default=50,
+            default=100,
             type=int,
             help='amount to buffer at beginning and end')
     parser.add_argument('--ignore-dataset',
@@ -197,15 +185,19 @@ if __name__ == '__main__':
             default=False,
             action='store_true',
             help='if set, ignore the batch calcium statistics')
-    parser.add_argument('--loss',
-            default='crossentropy',
+    parser.add_argument('-l', '--loss',
+            default='mse',
             type=str,
-            choices=['crossentropy', 'pearson'],
+            choices=['crossentropy', 'pearson', 'mse'],
             help='type of loss function to use')
     parser.add_argument('-v', '--num_val',
             default=300,
             type=int,
             help='number of validation samples')
+    parser.add_argument('-e', '--evaluate',
+            default=False,
+            action='store_true',
+            help='if set, evaluate on the testing data')
 
     args = parser.parse_args()
 
@@ -228,7 +220,8 @@ if __name__ == '__main__':
 
     # Gets the training data.
     dataset, calcium, calcium_stats, spikes = utils.get_training_set(
-            args.num_timesteps,
+            buffer_length=args.buffer_length,
+            num_timesteps=args.num_timesteps,
             rebuild=args.rebuild_data)
 
     # Cuts off the beginning and end bits.
@@ -265,9 +258,10 @@ if __name__ == '__main__':
         loss = 'binary_crossentropy'
     elif args.loss == 'pearson':
         loss = utils.pearson_loss
+    elif args.loss == 'mse':
+        loss = 'mse'
     else:
-        raise ValueError('Invalid loss: "%s" (should be "crossentropy" or '
-                         '"pearson").' % args.loss)
+        raise ValueError('Invalid loss: "%s".' % args.loss)
 
     # Compiles and trains the model.
     model.compile(optimizer=optimizers.Adam(lr=1e-4),
@@ -283,10 +277,11 @@ if __name__ == '__main__':
     if os.path.exists(args.model_location):
         model.load_weights(args.model_location)
 
+    # Plots samples of the model's performace.
     if args.plot:
         import matplotlib.pyplot as plt
 
-        x = np.arange(0, args.num_timesteps)
+        x = np.arange(0, args.num_timesteps) / 100
         x_buf = x[args.buffer_length:-args.buffer_length]
 
         plt.figure()
@@ -302,13 +297,22 @@ if __name__ == '__main__':
             # Plots the spikes and spike predictions.
             ax = plt.subplot(2, 3, i + 1)
             plt.plot(x_buf, preds[0], label='Predictions')
-            # plt.plot(x_buf, np.floor(preds[0]), label='Predictions (Floored)')
-            plt.plot(x_buf, _scale(val_spikes[0][idx]), label='Actual Spikes')
+            # plt.plot(x_buf, np.floor(preds[0]),
+            #         label='Predictions (Floored)')
+            plt.plot(x_buf, val_spikes[0][idx],
+                    label='Actual Spikes')
+            plt.xlabel('time (s)')
             plt.legend()
 
             # Plots the calcium trace.
             plt.subplot(2, 3, i + 4, sharex=ax)
-            plt.plot(x, val_inputs[0][idx], label='Calcium Trace')
+            plt.plot(x, val_inputs[0][idx],
+                    label='Calcium Trace')
+            plt.xlabel('time (s)')
             plt.legend()
 
         plt.show()
+
+    # Runs the evaluation script.
+    if args.evaluate:
+        evaluate(model, args)

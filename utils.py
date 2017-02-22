@@ -13,11 +13,7 @@ import numpy as np
 from keras.layers import Layer
 
 import keras.backend as K
-
-if K.backend() == 'tensorflow':
-    from tensorflow import floor
-else:
-    from theano.tensor import floor
+import tensorflow as tf
 
 
 _DOWNLOAD_URL = 'http://spikefinder.codeneuro.org/'
@@ -51,13 +47,13 @@ class QuadFeature(Layer):
         return input_shape
 
 
-def pad_to_length(x, length, axis=0):
+def pad_to_length(x, length):
     """Pads `x` to length `length` along axis `axis`."""
 
     s = list(x.shape)
-    s[axis] = length
+    s[0] = length
     z = np.zeros(s)
-    z[:x.shape[axis]] = x
+    z[:x.shape[0]] = x
     return z
 
 
@@ -70,10 +66,34 @@ def output_to_ints(spike_output):
 def _normalize(i):
     min_v = K.min(i)
     max_v = K.max(i)
-    return (i - min_v) * 2 / (max_v - min_v + 1e-7)
+    return (i - min_v) * 6 / (max_v - min_v + 1e-7)
 
 
-def pearson_corr(y_true, y_pred, pre_floor=False, normalize=False):
+def pool1d(x, length=4):
+    """Adds groups of `length` over the time dimension in x.
+
+    Args:
+        x: 3D Tensor with shape (batch_size, time_dim, feature_dim).
+        length: the pool length.
+
+    Returns:
+        3D Tensor with shape (batch_size, time_dim // length, feature_dim).
+    """
+
+    x = tf.expand_dims(x, -1)  # Add "channel" dimension.
+    avg_pool = tf.nn.avg_pool(x,
+        ksize=(1, length, 1, 1),
+        strides=(1, length, 1, 1),
+        padding='SAME')
+    x = tf.squeeze(avg_pool, axis=-1)
+
+    return x * length
+
+
+def pearson_corr(y_true, y_pred,
+        pre_floor=False,
+        normalize=False,
+        pool=False):
     """Calculates Pearson correlation as a metric.
 
     This calculates Pearson correlation the way that the competition calculates
@@ -82,12 +102,16 @@ def pearson_corr(y_true, y_pred, pre_floor=False, normalize=False):
     y_true and y_pred have shape (batch_size, num_timesteps, 1).
     """
 
+    if pool:
+        y_true = pool1d(y_true, length=4)
+        y_pred = pool1d(y_pred, length=4)
+
     if normalize:
         y_pred = _normalize(y_pred)
 
     if pre_floor:
-        y_true = K.squeeze(floor(y_true), 2)
-        y_pred = K.squeeze(floor(y_pred), 2)
+        y_true = K.squeeze(tf.floor(y_true), 2)
+        y_pred = K.squeeze(tf.floor(y_pred), 2)
     else:
         y_true = K.squeeze(y_true, 2)
         y_pred = K.squeeze(y_pred, 2)
@@ -103,7 +127,10 @@ def pearson_corr(y_true, y_pred, pre_floor=False, normalize=False):
     return K.mean(n / (K.sqrt(d) + 1e-12))
 
 
-def pearson_loss(y_true, y_pred, depth=1, normalize=False):
+def pearson_loss(y_true, y_pred,
+        depth=0,
+        normalize=False,
+        pool=False):
     """Loss function to maximize pearson correlation.
 
     y_true and y_pred have shape (batch_size, num_timesteps, 1).
@@ -111,6 +138,10 @@ def pearson_loss(y_true, y_pred, depth=1, normalize=False):
 
     if normalize:
         y_pred = _normalize(y_pred)
+
+    if pool:
+        y_true = pool1d(y_true, length=4)
+        y_pred = pool1d(y_pred, length=4)
 
     x_mean = y_true - K.mean(y_true, axis=1, keepdims=True)
     y_mean = y_pred - K.mean(y_pred, axis=1, keepdims=True)
@@ -164,98 +195,58 @@ def bin_percent(i):
     return _prct
 
 
-def get_eval(dataset, num_timesteps=100):
-    """Iterates through columns of the dataset.
+def _process_data_set(num_timesteps, calcium, spikes=None, step_size=None):
+    """Internal function for processing a dataset."""
 
-    Args:
-        dataset: str, "train" or "test".
-        num_timesteps: int, number of timesteps in each batch.
+    col_lens = calcium.shape[0] - np.sum(np.isnan(calcium), axis=0)
+    calcium = np.expand_dims(calcium, -1)
 
-    Yields:
-        Consult code (multiple layers).
-    """
+    # Converts NaNs to 0s.
+    calcium_c = np.nan_to_num(calcium)
+    calcium_n = calcium / np.linalg.norm(calcium_c)
 
-    def _process_single_column(calcium_column):
-        calcium_column = np.expand_dims(calcium_column, -1)
-        col_length = len(calcium_column) - np.sum(np.isnan(calcium_column))
+    if step_size is None:
+        step_size = num_timesteps // 2
 
-        # Removes the NaN values.
-        calcium_column = calcium_column[:col_length]
+    calcium_stats = np.concatenate(
+            [np.nanmean(calcium, axis=1),
+             np.nanstd(calcium, axis=1),
+             np.nanmedian(calcium, axis=1),
+             np.nanmean(calcium_n, axis=1),
+             np.nanstd(calcium_n, axis=1),
+             np.nanmedian(calcium_n, axis=1)],
+            axis=1)
 
-        arr_list = []
-        for i in range(0, col_length, num_timesteps):
-            arr_list.append(pad_to_length(calcium_column[i:i + num_timesteps],
-                                          num_timesteps))
+    def _pad(x, i):
+        return pad_to_length(x[i:i + num_timesteps], num_timesteps)
 
-        return col_length, np.stack(arr_list)
-
-    def _entry_iterator(data_entry):
-        for col_idx in range(data_entry.shape[1]):
-            col_length, data = _process_single_column(data_entry[:, col_idx])
-            yield col_idx, col_length, data
-
-    if dataset == 'train':
-        for d_idx, (data_entry, _) in enumerate(get_data_set('train')):
-            yield (d_idx, data_entry.shape, _entry_iterator(data_entry))
-
-    elif dataset == 'test':
-        for d_idx, data_entry in enumerate(get_data_set('test')):
-            yield (d_idx, data_entry.shape, _entry_iterator(data_entry))
-
+    if spikes is None:
+        for i in range(calcium.shape[1]):
+            for j in range(0, col_lens[i] - step_size, step_size):
+                yield (_pad(calcium[:, i], j),
+                       _pad(calcium_c[:, i], j),
+                       _pad(calcium_stats, j), i)
     else:
-        raise ValueError('Invalid dataset: "%s" (expected "train" or '
-                         '"test").' % dataset)
+        spikes = np.expand_dims(spikes, -1)
+        spikes_c = np.nan_to_num(spikes)
+        for i in range(calcium.shape[1]):
+            for j in range(0, col_lens[i] - step_size, step_size):
+                yield (_pad(calcium_c[:, i], j),
+                       _pad(spikes_c[:, i], j),
+                       _pad(calcium_stats, j), i)
 
-def get_training_set(num_timesteps=100,
+
+def get_training_set(buffer_length,
+                     num_timesteps,
                      cache='/tmp/spikefinder_data.npz',
-                     rebuild=False):
-    """Builds the training set (as Numpy arrays).
-
-    Args:
-        num_timesteps: int, number of timesteps in each batch.
-        cache: str, where to cache the built dataset.
-        rebuild: bool, if set, ignore the cache.
-
-    Returns:
-        tuple, (dataset, calcium, spikes)
-            dataset: Numpy integer array, the dataset in question.
-            calcium: Numpy float array, the calcium traces.
-            spikes: Numpy float array, the one-hot encoded spikes.
-    """
+                     rebuild=False,
+                     shuffle=True):
+    """Builds the training set (as Numpy arrays)."""
 
     if not os.path.exists(cache) or rebuild:
-
-        def _process_data_set(calcium, spikes):
-            col_lens = calcium.shape[0] - np.sum(np.isnan(calcium), axis=0)
-            calcium = np.expand_dims(calcium, -1)
-            spikes = np.expand_dims(spikes, -1)
-
-            # Converts NaNs to 0s.
-            calcium_c = np.nan_to_num(calcium)
-            spikes_c = np.nan_to_num(spikes)
-
-            calcium_n = calcium / np.linalg.norm(calcium_c)
-
-            step_size = num_timesteps  # // 3
-            calcium_stats = np.concatenate(
-                    [np.nanmean(calcium, axis=1),
-                     np.nanstd(calcium, axis=1),
-                     np.nanmedian(calcium, axis=1),
-                     np.nanmean(calcium_n, axis=1),
-                     np.nanstd(calcium_n, axis=1),
-                     np.nanmedian(calcium_n, axis=1)],
-                    axis=1)
-
-            def _pad(x, i):
-                return pad_to_length(x[i:i + num_timesteps], num_timesteps)
-
-            for i in range(calcium.shape[1]):
-                for j in range(0, col_lens[i] - step_size, step_size):
-                    yield (_pad(calcium_c[:, i], j),
-                           _pad(spikes_c[:, i], j),
-                           _pad(calcium_stats, j))
-
-        pairs = (_process_data_set(c, s) for c, s in get_data_set('train'))
+        step_size = num_timesteps - 2 * buffer_length
+        pairs = (_process_data_set(num_timesteps, c, s, step_size=step_size)
+                 for c, s in get_data_set('train'))
 
         # Builds actual arrays.
         dataset_arr = []
@@ -278,12 +269,13 @@ def get_training_set(num_timesteps=100,
         spikes_arr = np.stack(spikes_arr)
 
         # Shuffles along the batch axis.
-        idx = np.arange(dataset_arr.shape[0])
-        np.random.shuffle(idx)
-        dataset_arr = dataset_arr[idx]
-        calcium_arr = calcium_arr[idx]
-        calcium_stats_arr = calcium_stats_arr[idx]
-        spikes_arr = spikes_arr[idx]
+        if shuffle:
+            idx = np.arange(dataset_arr.shape[0])
+            np.random.shuffle(idx)
+            dataset_arr = dataset_arr[idx]
+            calcium_arr = calcium_arr[idx]
+            calcium_stats_arr = calcium_stats_arr[idx]
+            spikes_arr = spikes_arr[idx]
 
         with open(cache, 'wb') as f:
             np.savez(f,
