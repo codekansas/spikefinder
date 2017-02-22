@@ -68,44 +68,54 @@ def build_model(num_timesteps,
     # x = BatchNormalization(axis=1)(x)  # normalize across time.
 
     # Extracts first-level (dataset-independent) features.
-    x = Convolution1D(32, 2,
+    x = Convolution1D(256, 2,
             init='glorot_normal',
             border_mode='same',
             activation='relu')(x)
     # x = Dropout(0.5)(x)
-    x = BatchNormalization(axis=1)(x)  # normalize across time.
+    # x = BatchNormalization(axis=1)(x)  # normalize across time.
 
     if use_dataset:
         dataset = Input(shape=(1,), dtype='int32', name='dataset')
         inputs.append(dataset)
-        d_emb = Flatten()(Embedding(10, 32)(dataset))
+        d_emb = Flatten()(Embedding(10, 256)(dataset))
         d_emb = Activation('tanh')(d_emb)
         x = Lambda(lambda x: x * K.expand_dims(d_emb, 1))(x)
 
     # x = LSTM(512, return_sequences=True, forget_bias_init='one')(x)
 
     # Given weighed first-level features, look for second-level features.
-    x = Convolution1D(64, 16,
+    x = Convolution1D(128, 4,
         activation='relu',
         border_mode='same')(x)
     x = BatchNormalization(axis=1)(x)  # normalize across time.
 
-    x = Convolution1D(128, 8,
+    x = Convolution1D(64, 8,
         activation='relu',
         border_mode='same')(x)
     x = BatchNormalization(axis=1)(x)  # normalize across time.
 
-    x = Convolution1D(256, 4,
+    x = Convolution1D(32, 16,
         activation='relu',
         border_mode='same')(x)
     x = BatchNormalization(axis=1)(x)  # normalize across time.
 
-    x = Convolution1D(512, 2,
+    x = Convolution1D(64, 8,
         activation='relu',
         border_mode='same')(x)
     x = BatchNormalization(axis=1)(x)  # normalize across time.
 
-    x = Convolution1D(1024, 1,
+    x = Convolution1D(128, 4,
+        activation='relu',
+        border_mode='same')(x)
+    x = BatchNormalization(axis=1)(x)  # normalize across time.
+
+    x = Convolution1D(256, 2,
+        activation='relu',
+        border_mode='same')(x)
+    x = BatchNormalization(axis=1)(x)  # normalize across time.
+
+    x = Convolution1D(512, 1,
         activation='relu',
         border_mode='same')(x)
     x = Dropout(0.5)(x)
@@ -116,7 +126,7 @@ def build_model(num_timesteps,
     # x = Dropout(0.5)(x)
 
     x = Convolution1D(1, 1,
-        activation=None,
+        activation='sigmoid',
         border_mode='same',
         W_regularizer='l2',
         init='glorot_normal')(x)
@@ -237,7 +247,7 @@ if __name__ == '__main__':
             action='store_true',
             help='if set, ignore the batch calcium statistics')
     parser.add_argument('-l', '--loss',
-            default='mse',
+            default='crossentropy',
             type=str,
             choices=['crossentropy', 'pearson', 'mse'],
             help='type of loss function to use')
@@ -315,7 +325,7 @@ if __name__ == '__main__':
         raise ValueError('Invalid loss: "%s".' % args.loss)
 
     # Compiles and trains the model.
-    model.compile(optimizer=optimizers.Adam(lr=1e-4),
+    model.compile(optimizer=optimizers.Adam(lr=1e-5),
                   loss=loss,
                   metrics=metrics)
     model.fit(inputs, spikes,
