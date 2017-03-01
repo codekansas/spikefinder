@@ -195,7 +195,7 @@ def evaluate(model, args, mode='train'):
 
         # Samples as spikes instead.
         # n_spike = np.random.uniform(low=0., high=1., size=output_arr.shape)
-        # output_arr = np.cast['int32'](n_spike < output_arr)
+        # output_arr = np.cast['int32'](output_arr > 0.1)
 
         # Saves the output of the array.
         np.savetxt(filename,
