@@ -128,8 +128,8 @@ def pearson_corr(y_true, y_pred,
 
 
 def pearson_loss(y_true, y_pred,
-        depth=0,
-        normalize=False,
+        depth=2,
+        normalize=True,
         pool=False):
     """Loss function to maximize pearson correlation.
 
@@ -195,6 +195,20 @@ def bin_percent(i):
     return _prct
 
 
+def _normalize_calcium(calcium):
+    """Normalizes calcium trace.
+
+    Args:
+        calcium: numpy array with shape (num_timesteps, num_channels) and with
+            NaN values remaining.
+    """
+
+    mean = np.nanmean(calcium)
+    std = np.nanvar(calcium)
+
+    return 0.05 * np.nan_to_num((calcium - mean) / std)
+
+
 def _get_calcium_stats(calcium):
     """Gets statistics about the calcium trace.
 
@@ -206,16 +220,12 @@ def _get_calcium_stats(calcium):
         calcium_stats: numpy array with shape (num_timesteps).
     """
 
-    calcium_c = np.nan_to_num(calcium)
-    calcium_n = calcium / np.linalg.norm(calcium_c)
-
     calcium_stats = np.concatenate(
-            [np.nanmean(calcium, axis=1),
-             np.nanstd(calcium, axis=1),
-             np.nanmedian(calcium, axis=1),
-             np.nanmean(calcium_n, axis=1),
-             np.nanstd(calcium_n, axis=1),
-             np.nanmedian(calcium_n, axis=1)],
+            [
+                np.nanmean(calcium, axis=1),
+                np.nanstd(calcium, axis=1),
+                np.nanmedian(calcium, axis=1),
+            ],
             axis=1)
 
     return calcium_stats
@@ -240,8 +250,8 @@ def get_testing_set(num_timesteps, buffer_length, mode='train'):
         calcium = np.expand_dims(calcium, -1)
 
         # Gets statistics about the calcium trace.
+        calcium = _normalize_calcium(calcium)
         calcium_stats = _get_calcium_stats(calcium)
-        calcium = np.nan_to_num(calcium)
 
         # Step size: Move this much for each data iteration.
         step_size = num_timesteps - 2 * buffer_length
@@ -302,8 +312,8 @@ def get_training_set(buffer_length,
             calcium = np.expand_dims(calcium, -1)
 
             # Gets statistics about the calcium trace.
+            calcium = _normalize_calcium(calcium)
             calcium_stats = _get_calcium_stats(calcium)
-            calcium = np.nan_to_num(calcium)
 
             if step_size is None:
                 step_size = num_timesteps // 2
@@ -341,7 +351,7 @@ def get_training_set(buffer_length,
                 calcium_arr.append(c)
                 calcium_stats_arr.append(c_stats)
                 spikes_arr.append(s)
-            print('processed %d datasets' % dataset)
+            print('processed %d datasets' % (dataset + 1))
 
         # Concatenates to one.
         dataset_arr = np.stack(dataset_arr)

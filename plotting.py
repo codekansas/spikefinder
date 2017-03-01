@@ -40,6 +40,25 @@ def calcium_hist():
     plt.show()
 
 
+
+def plot_calcium():
+    """Visualize calcium traces."""
+
+    plt.figure()
+    for i, (calcium, spikes) in enumerate(utils.get_data_set('train')):
+        print(i)
+
+        plt.subplot(10, 2, i + 1)
+        plt.plot(calcium[:, 0])
+
+        plt.subplot(10, 2, i + 11)
+        plt.plot(spikes[:, 0])
+
+    plt.show()
+
+
 if __name__ == '__main__':
     # spike_hist()
-    calcium_hist()
+    # calcium_hist()
+    plot_calcium()
+

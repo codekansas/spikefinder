@@ -13,6 +13,7 @@ import utils
 
 import keras.backend as K
 from keras import optimizers
+from keras import regularizers
 from keras.callbacks import ModelCheckpoint
 
 from keras.layers import Activation
@@ -25,6 +26,7 @@ from keras.layers import Dense
 from keras.layers import Dropout
 from keras.layers import Embedding
 from keras.layers import Flatten
+from keras.layers import GRU
 from keras.layers import Input
 from keras.layers import Lambda
 from keras.layers import LeakyReLU
@@ -41,6 +43,40 @@ from keras.models import Model
 from keras.models import load_model
 
 
+def conv_bn(x, nb_filter, filter_length):
+    """Applies convolution and batch normalization."""
+
+    x = Convolution1D(nb_filter, filter_length,
+                      activation=None,
+                      border_mode='same')(x)
+    x = PReLU()(x)
+    x = BatchNormalization(axis=2)(x)
+    return x
+
+
+def inception_cell(x_input):
+    """Applies a single inception cell."""
+
+    x = x_input
+
+    a = conv_bn(x, 64, 1)
+
+    b = conv_bn(x, 48, 1)
+    b = conv_bn(b, 64, 10)
+
+    c = conv_bn(x, 64, 1)
+    c = conv_bn(c, 96, 7)
+    c = conv_bn(c, 96, 7)
+
+    d = AveragePooling1D(7, stride=1, border_mode='same')(x)
+    d = conv_bn(d, 32, 1)
+
+    x = merge([a, b, c, d],
+              mode='concat', concat_axis=-1)
+
+    return x
+
+
 def build_model(num_timesteps,
         buffer_length,
         use_dataset,
@@ -48,12 +84,13 @@ def build_model(num_timesteps,
     calcium = Input(shape=(num_timesteps, 1), dtype='float32', name='calcium')
     inputs = [calcium]
 
+    x = calcium
+    # x = BatchNormalization(axis=1, mode=1)(x)  # normalize across time.
+
     if use_calcium_stats:
-        calcium_stats = Input(shape=(num_timesteps, 6), dtype='float32')
+        calcium_stats = Input(shape=(num_timesteps, 3), dtype='float32')
         inputs.append(calcium_stats)
-        x = merge([calcium, calcium_stats], mode='concat')
-    else:
-        x = calcium
+        x = merge([x, calcium_stats], mode='concat')
 
     # Adds some more features.
     delta_1 = utils.DeltaFeature()(x)
@@ -65,70 +102,44 @@ def build_model(num_timesteps,
     # Merge channels together.
     x = merge([x, delta_1, delta_2, quad_1, quad_2, quad_3],
                mode='concat', concat_axis=-1)
-    # x = BatchNormalization(axis=1)(x)  # normalize across time.
 
-    # Extracts first-level (dataset-independent) features.
-    x = Convolution1D(256, 2,
-            init='glorot_normal',
-            border_mode='same',
-            activation='relu')(x)
-    # x = Dropout(0.5)(x)
-    # x = BatchNormalization(axis=1)(x)  # normalize across time.
+    # Adds average pooling features.
+    p = AveragePooling1D(5, stride=1, border_mode='same')(x)
+    x = merge([x, p], mode='concat')
 
     if use_dataset:
         dataset = Input(shape=(1,), dtype='int32', name='dataset')
         inputs.append(dataset)
-        d_emb = Flatten()(Embedding(10, 256)(dataset))
+        d_emb = Flatten()(Embedding(10, 5)(dataset))
         d_emb = Activation('tanh')(d_emb)
-        x = Lambda(lambda x: x * K.expand_dims(d_emb, 1))(x)
 
-    # x = LSTM(512, return_sequences=True, forget_bias_init='one')(x)
+        # Old way: Try to weight convolutional activations.
+        # x = Lambda(lambda x: x * K.expand_dims(d_emb, 1))(x)
 
-    # Given weighed first-level features, look for second-level features.
-    x = Convolution1D(128, 4,
-        activation='relu',
-        border_mode='same')(x)
-    x = BatchNormalization(axis=1)(x)  # normalize across time.
+        # Better way (maybe): Add it as another set of features.
+        d_emb = RepeatVector(num_timesteps)(d_emb)
+        x = merge([x, d_emb], mode='concat')
 
-    x = Convolution1D(64, 8,
-        activation='relu',
-        border_mode='same')(x)
-    x = BatchNormalization(axis=1)(x)  # normalize across time.
+    # Adds convolutional layers.
+    for i in range(3):
+        x = inception_cell(x)
 
-    x = Convolution1D(32, 16,
-        activation='relu',
-        border_mode='same')(x)
-    x = BatchNormalization(axis=1)(x)  # normalize across time.
+    # Adds residual layers.
+    x = Convolution1D(64, 5,
+            activation='tanh',
+            border_mode='same')(x)
 
-    x = Convolution1D(64, 8,
-        activation='relu',
-        border_mode='same')(x)
-    x = BatchNormalization(axis=1)(x)  # normalize across time.
+    # for i in range(5):
+    #     x_c = Convolution1D(64, 5, activation='relu', border_mode='same')(x)
+    #     # x_c = Dropout(0.3)(x_c)
+    #     x = merge([x, x_c], mode='sum')
 
-    x = Convolution1D(128, 4,
-        activation='relu',
-        border_mode='same')(x)
-    x = BatchNormalization(axis=1)(x)  # normalize across time.
-
-    x = Convolution1D(256, 2,
-        activation='relu',
-        border_mode='same')(x)
-    x = BatchNormalization(axis=1)(x)  # normalize across time.
-
-    x = Convolution1D(512, 1,
-        activation='relu',
-        border_mode='same')(x)
+    x = Convolution1D(128, 1, activation='tanh')(x)
     x = Dropout(0.5)(x)
-
-    # x = Convolution1D(512, 1,
-    #     activation='tanh',
-    #     border_mode='same')(x)
-    # x = Dropout(0.5)(x)
 
     x = Convolution1D(1, 1,
         activation='sigmoid',
         border_mode='same',
-        W_regularizer='l2',
         init='glorot_normal')(x)
 
     x = Cropping1D((buffer_length, buffer_length))(x)
@@ -146,9 +157,9 @@ def evaluate(model, args, mode='train'):
         """Gets inputs specified by the user."""
 
         inputs = [calcium]
-        if not args.ignore_calcium_stats:
+        if args.use_calcium_stats:
             inputs.append(calcium_stats)
-        if not args.ignore_dataset:
+        if args.use_dataset:
             inputs.append(dataset)
         return inputs
 
@@ -181,6 +192,10 @@ def evaluate(model, args, mode='train'):
             mean_v = np.mean(preds)
             output_arr[:min_idx, cidx] = mean_v
             output_arr[max_idx:col_len, cidx] = mean_v
+
+        # Samples as spikes instead.
+        # n_spike = np.random.uniform(low=0., high=1., size=output_arr.shape)
+        # output_arr = np.cast['int32'](n_spike < output_arr)
 
         # Saves the output of the array.
         np.savetxt(filename,
@@ -223,7 +238,7 @@ if __name__ == '__main__':
             action='store_true',
             help='if set, plot a sample prediction')
     parser.add_argument('-b', '--batch-size',
-            default=8,
+            default=32,
             type=int,
             help='size of each minibatch')
     parser.add_argument('--model-location',
@@ -238,14 +253,14 @@ if __name__ == '__main__':
             default=100,
             type=int,
             help='amount to buffer at beginning and end')
-    parser.add_argument('--ignore-dataset',
+    parser.add_argument('--use-dataset',
             default=False,
             action='store_true',
-            help='if set, ignore the dataset as a feature')
-    parser.add_argument('--ignore-calcium-stats',
+            help='if set, use the dataset as a feature')
+    parser.add_argument('--use-calcium-stats',
             default=False,
             action='store_true',
-            help='if set, ignore the batch calcium statistics')
+            help='if set, use the batch calcium statistics')
     parser.add_argument('-l', '--loss',
             default='crossentropy',
             type=str,
@@ -265,8 +280,8 @@ if __name__ == '__main__':
     # Builds the model.
     model = build_model(args.num_timesteps,
             args.buffer_length,
-            use_dataset=not args.ignore_dataset,
-            use_calcium_stats=not args.ignore_calcium_stats)
+            use_dataset=args.use_dataset,
+            use_calcium_stats=args.use_calcium_stats)
 
     # Handles model loading / rebuilding.
     if args.rebuild_model:
@@ -290,9 +305,9 @@ if __name__ == '__main__':
 
     # Builds the inputs according to the user's specifications.
     inputs = [calcium]
-    if not args.ignore_calcium_stats:
+    if args.use_calcium_stats:
         inputs.append(calcium_stats)
-    if not args.ignore_dataset:
+    if args.use_dataset:
         inputs.append(dataset)
 
     # Splits into training and validation sets.
@@ -325,7 +340,7 @@ if __name__ == '__main__':
         raise ValueError('Invalid loss: "%s".' % args.loss)
 
     # Compiles and trains the model.
-    model.compile(optimizer=optimizers.Adam(lr=1e-5),
+    model.compile(optimizer=optimizers.Adam(1e-5),
                   loss=loss,
                   metrics=metrics)
     model.fit(inputs, spikes,
@@ -349,6 +364,7 @@ if __name__ == '__main__':
 
         # For scaling inputs to [0, 1].
         _scale = lambda x: (x - np.min(x)) * (np.max(x) - np.min(x) + 1e-12)
+        ax = None
 
         for i in range(3):
             idx = np.random.randint(args.num_val)
@@ -356,8 +372,12 @@ if __name__ == '__main__':
             preds = model.predict(pred_on)
 
             # Plots the spikes and spike predictions.
-            ax = plt.subplot(2, 3, i + 1)
+            ax = plt.subplot(3, 3, i + 1, sharey=ax)
             plt.plot(x_buf, preds[0], label='Predictions')
+            plt.xlabel('time (s)')
+            plt.legend()
+
+            plt.subplot(3, 3, i + 4, sharex=ax)
             # plt.plot(x_buf, np.floor(preds[0]),
             #         label='Predictions (Floored)')
             plt.plot(x_buf, val_spikes[0][idx],
@@ -366,7 +386,7 @@ if __name__ == '__main__':
             plt.legend()
 
             # Plots the calcium trace.
-            plt.subplot(2, 3, i + 4, sharex=ax)
+            plt.subplot(3, 3, i + 7, sharex=ax)
             plt.plot(x, val_inputs[0][idx],
                     label='Calcium Trace')
             plt.xlabel('time (s)')
